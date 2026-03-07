@@ -1,107 +1,58 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import NavBar from "@/components/NavBar";
+import Link from "next/link";
+import { useAppContext } from "@/providers/AppProvider";
 
-type Todo = {
-  id: number;
-  title: string;
-  done: boolean;
-};
+export default function Home() {
+  const { todos, habits } = useAppContext();
 
-export default function TodosPage() {
-  const [todos, setTodos] = useState<Todo[]>([]);
-  const [newTodo, setNewTodo] = useState("");
-
-  // Load todos from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem("ass-todos");
-    if (saved) {
-      setTodos(JSON.parse(saved));
-    }
-  }, []);
-
-  // Save todos whenever they change
-  useEffect(() => {
-    localStorage.setItem("ass-todos", JSON.stringify(todos));
-  }, [todos]);
-
-  function addTodo() {
-    if (!newTodo.trim()) return;
-
-    const todo: Todo = {
-      id: Date.now(),
-      title: newTodo,
-      done: false,
-    };
-
-    setTodos([...todos, todo]);
-    setNewTodo("");
-  }
-
-  function toggleTodo(id: number) {
-    setTodos(
-      todos.map((todo) =>
-        todo.id === id ? { ...todo, done: !todo.done } : todo
-      )
-    );
-  }
-
-  function deleteTodo(id: number) {
-    setTodos(todos.filter((todo) => todo.id !== id));
-  }
+  const completedTodos = todos.filter((todo) => todo.done).length;
+  const completedHabits = habits.filter((habit) => habit.completedToday).length;
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <NavBar />
+      <main className="mx-auto max-w-5xl px-6 py-10">
+        <h1 className="text-3xl font-bold">ASS Dashboard</h1>
+        <p className="mt-2 text-gray-600">
+          Task manager, habit tracker, calendar planner, and AI assistant.
+        </p>
 
-      <main className="mx-auto max-w-3xl px-6 py-10">
-        <h1 className="text-3xl font-bold">Todos</h1>
-
-        <div className="mt-6 flex gap-2">
-          <input
-            value={newTodo}
-            onChange={(e) => setNewTodo(e.target.value)}
-            placeholder="Add a task..."
-            className="flex-1 rounded-xl border px-4 py-3"
-          />
-          <button
-            onClick={addTodo}
-            className="rounded-xl bg-black px-4 py-3 text-white"
+        <div className="mt-8 grid gap-4 sm:grid-cols-2">
+          <Link
+            href="/todos"
+            className="rounded-xl border bg-white p-5 shadow-sm hover:shadow-md"
           >
-            Add
-          </button>
-        </div>
+            <h2 className="text-xl font-semibold">Todos</h2>
+            <p className="mt-2 text-gray-600">
+              {completedTodos}/{todos.length} completed
+            </p>
+          </Link>
 
-        <div className="mt-6 space-y-3">
-          {todos.map((todo) => (
-            <div
-              key={todo.id}
-              className="flex items-center justify-between rounded-xl border bg-white p-4"
-            >
-              <span
-                className={todo.done ? "line-through text-gray-400" : ""}
-              >
-                {todo.title}
-              </span>
+          <Link
+            href="/habits"
+            className="rounded-xl border bg-white p-5 shadow-sm hover:shadow-md"
+          >
+            <h2 className="text-xl font-semibold">Habits</h2>
+            <p className="mt-2 text-gray-600">
+              {completedHabits}/{habits.length} checked in today
+            </p>
+          </Link>
 
-              <div className="flex gap-2">
-                <button
-                  onClick={() => toggleTodo(todo.id)}
-                  className="rounded-lg border px-3 py-1"
-                >
-                  {todo.done ? "Undo" : "Done"}
-                </button>
+          <Link
+            href="/calendar"
+            className="rounded-xl border bg-white p-5 shadow-sm hover:shadow-md"
+          >
+            <h2 className="text-xl font-semibold">Calendar</h2>
+            <p className="mt-2 text-gray-600">Schedule tasks and events</p>
+          </Link>
 
-                <button
-                  onClick={() => deleteTodo(todo.id)}
-                  className="rounded-lg border px-3 py-1 text-red-600"
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          ))}
+          <Link
+            href="/chat"
+            className="rounded-xl border bg-white p-5 shadow-sm hover:shadow-md"
+          >
+            <h2 className="text-xl font-semibold">AI Chat</h2>
+            <p className="mt-2 text-gray-600">Plan your day with your data</p>
+          </Link>
         </div>
       </main>
     </div>

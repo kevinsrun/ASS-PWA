@@ -1,22 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import BottomNav from "@/components/BottomNav";
+import { AppProvider } from "@/providers/AppProvider";
 
 export const metadata: Metadata = {
   title: "ASS",
   description: "Todo, habits, and AI assistant",
-  manifest: "/manifest.json",
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: "default",
-    title: "ASS",
-  },
-  icons: {
-    icon: [
-      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
-      { url: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
-    ],
-    apple: [{ url: "/icons/apple-touch-icon.png", sizes: "180x180" }],
-  },
 };
 
 export const viewport: Viewport = {
@@ -25,12 +14,17 @@ export const viewport: Viewport = {
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className="pb-16">
+        <AppProvider>
+          {children}
+          <BottomNav />
+        </AppProvider>
+      </body>
     </html>
   );
 }
