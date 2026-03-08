@@ -19,7 +19,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="pb-16">
+      <body className="pb-24">
         <AppProvider>
           {children}
           <BottomNav />

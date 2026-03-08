@@ -25,7 +25,7 @@ export default function HabitsPage() {
   ).length;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-white">
       <main className="mx-auto max-w-3xl px-6 py-10">
         <h1 className="text-3xl font-bold">Habits</h1>
         <p className="mt-2 text-gray-600">
@@ -42,7 +42,7 @@ export default function HabitsPage() {
           />
           <button
             onClick={handleAddHabit}
-            className="rounded-xl bg-black px-4 py-3 text-white"
+            className="rounded-xl bg-gray-900 px-4 py-3 text-white"
           >
             Add
           </button>

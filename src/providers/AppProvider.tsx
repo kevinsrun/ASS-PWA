@@ -14,7 +14,11 @@ import { loadTodos, saveTodos, loadHabits, saveHabits } from "@/lib/storage";
 type AppContextType = {
   todos: Todo[];
   habits: Habit[];
-  addTodo: (title: string) => void;
+  addTodo: (
+  title: string,
+  priority?: "low" | "medium" | "high",
+  duration?: number
+) => void;
   toggleTodo: (id: number) => void;
   deleteTodo: (id: number) => void;
   addHabit: (name: string) => void;
@@ -41,19 +45,25 @@ useEffect(() => {
   saveHabits(habits);
 }, [habits]);
 
-  function addTodo(title: string) {
-    const trimmed = title.trim();
-    if (!trimmed) return;
+function addTodo(
+  title: string,
+  priority: "low" | "medium" | "high" = "medium",
+  duration: number = 60
+) {
+  const trimmed = title.trim();
+  if (!trimmed) return;
 
-    setTodos((prev) => [
-      ...prev,
-      {
-        id: Date.now(),
-        title: trimmed,
-        done: false,
-      },
-    ]);
-  }
+  setTodos((prev) => [
+    ...prev,
+    {
+      id: Date.now(),
+      title: trimmed,
+      done: false,
+      priority,
+      duration,
+    },
+  ]);
+}
 
   function toggleTodo(id: number) {
     setTodos((prev) =>

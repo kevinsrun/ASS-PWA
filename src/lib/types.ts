@@ -2,6 +2,8 @@ export type Todo = {
   id: number;
   title: string;
   done: boolean;
+  priority: "low" | "medium" | "high";
+  duration: number;
 };
 
 export type Habit = {

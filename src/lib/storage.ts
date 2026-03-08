@@ -8,7 +8,17 @@ const HABITS_KEY = "ass_habits";
 export function loadTodos(): Todo[] {
   if (typeof window === "undefined") return [];
   const raw = localStorage.getItem(TODOS_KEY);
-  return raw ? JSON.parse(raw) : [];
+  if (!raw) return [];
+
+  const parsed = JSON.parse(raw);
+
+  return parsed.map((todo: any) => ({
+    id: todo.id,
+    title: todo.title,
+    done: todo.done,
+    priority: todo.priority ?? "medium",
+    duration: todo.duration ?? 60,
+  }));
 }
 
 export function saveTodos(todos: Todo[]) {
