@@ -113,6 +113,28 @@ export default function ProfilePage() {
         </div>
       </section>
 
+      <section className="ios-card mt-5 rounded-3xl p-5">
+        <h2 className="text-xl font-semibold text-emerald-950">Vercel Cron</h2>
+        <p className="mt-2 text-sm text-slate-600">
+          ASS uses two daily Vercel cron jobs: morning scan and evening review.
+          Schedules are stored in `vercel.json` and run in UTC.
+        </p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <a
+            href="/api/cron/morning"
+            className="flex min-h-12 items-center justify-center rounded-xl border border-emerald-100 bg-white px-4 text-emerald-700"
+          >
+            Test Morning Cron
+          </a>
+          <a
+            href="/api/cron/evening"
+            className="flex min-h-12 items-center justify-center rounded-xl border border-blue-100 bg-white px-4 text-blue-700"
+          >
+            Test Evening Cron
+          </a>
+        </div>
+      </section>
+
       <Link
         href="/analytics"
         className="ios-card mt-5 flex items-center gap-3 rounded-3xl p-5 text-emerald-800"
