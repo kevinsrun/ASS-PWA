@@ -3,18 +3,22 @@
 import { useState } from "react";
 import { useAppContext } from "@/providers/AppProvider";
 import TaskCard from "@/components/TaskCard";
+import { addMinutesToLabel } from "@/lib/dateTime";
 
 export default function TodosPage() {
-  const { todos, addTodo, toggleTodo, deleteTodo } = useAppContext();
+  const { todos, addTodo, toggleTodo, deleteTodo, updateTodo, addPlan } =
+    useAppContext();
   const [newTodo, setNewTodo] = useState("");
   const [priority, setPriority] = useState<"low" | "medium" | "high">("medium");
   const [duration, setDuration] = useState(60);
+  const [dueDate, setDueDate] = useState("");
 
   function handleAddTodo() {
-    addTodo(newTodo, priority, duration);
+    addTodo(newTodo, priority, duration, dueDate || null);
     setNewTodo("");
     setPriority("medium");
     setDuration(60);
+    setDueDate("");
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -32,20 +36,46 @@ export default function TodosPage() {
   const sortedTodos = [...todos].sort(
     (a, b) => priorityRank[a.priority] - priorityRank[b.priority]
   );
+  const today = new Date().toISOString().split("T")[0];
+  const overdueTodos = sortedTodos.filter(
+    (todo) => !todo.done && todo.dueDate && todo.dueDate < today
+  );
+  const todayTodos = sortedTodos.filter(
+    (todo) => !todo.done && todo.dueDate === today
+  );
+  const laterTodos = sortedTodos.filter(
+    (todo) => !todo.done && todo.dueDate !== today && !(todo.dueDate && todo.dueDate < today)
+  );
+
+  function convertToCalendar(todoId: number) {
+    const todo = todos.find((candidate) => candidate.id === todoId);
+    if (!todo) return;
+
+    addPlan({
+      title: todo.title,
+      date: todo.dueDate ?? today,
+      startLabel: "9:00 AM",
+      endLabel: addMinutesToLabel("09:00", todo.duration),
+      recurrence: todo.recurrence ?? "none",
+      category: "work",
+      priority: todo.priority,
+      notes: `Converted from todo${(todo.tags ?? []).length ? `: ${todo.tags?.join(", ")}` : ""}`,
+    });
+  }
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen">
       <main className="mx-auto max-w-3xl px-6 py-10">
-        <h1 className="text-3xl font-bold">To-Dos</h1>
+        <h1 className="text-3xl font-bold text-emerald-950">To-Dos</h1>
         <p className="mt-2 text-gray-600">Track tasks across the whole app.</p>
 
-        <div className="mt-6 flex gap-2">
+        <div className="ios-card mt-6 flex flex-wrap gap-2 rounded-3xl p-4">
           <input
             value={newTodo}
             onChange={(e) => setNewTodo(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Add a task..."
-            className="flex-1 rounded-xl border bg-white px-4 py-3"
+            className="min-h-12 flex-1 rounded-xl border bg-white px-4 py-3"
           />
 
           <select
@@ -53,41 +83,64 @@ export default function TodosPage() {
             onChange={(e) =>
               setPriority(e.target.value as "low" | "medium" | "high")
             }
-            className="rounded-xl border bg-white px-4 py-3"
+            className="min-h-12 rounded-xl border bg-white px-4 py-3"
           >
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
           </select>
 
-          <select
+          <input
+            type="date"
+            value={dueDate}
+            onChange={(event) => setDueDate(event.target.value)}
+            className="min-h-12 rounded-xl border bg-white px-4 py-3"
+          />
+
+          <input
+            type="number"
+            min={1}
             value={duration}
             onChange={(e) => setDuration(Number(e.target.value))}
-            className="rounded-xl border bg-white px-4 py-3"
-          >
-            <option value={30}>30m</option>
-            <option value={45}>45m</option>
-            <option value={60}>1h</option>
-            <option value={90}>1h 30m</option>
-            <option value={120}>2h</option>
-          </select>
+            className="min-h-12 w-28 rounded-xl border bg-white px-4 py-3"
+            aria-label="Duration in minutes"
+          />
 
           <button
             onClick={handleAddTodo}
-            className="rounded-xl bg-gray-900 px-4 py-3 text-white"
+            className="min-h-12 rounded-xl bg-emerald-600 px-4 py-3 text-white"
           >
             Add
           </button>
         </div>
 
-        <div className="mt-6 space-y-3">
-          {sortedTodos.map((todo) => (
-            <TaskCard
-              key={todo.id}
-              todo={todo}
-              onToggle={toggleTodo}
-              onDelete={deleteTodo}
-            />
+        <div className="mt-6 space-y-6">
+          {[
+            ["Overdue", overdueTodos],
+            ["Today", todayTodos],
+            ["Later", laterTodos],
+          ].map(([label, items]) => (
+            <section key={label as string}>
+              <h2 className="text-lg font-semibold">{label as string}</h2>
+              <div className="mt-3 space-y-3">
+                {(items as typeof todos).map((todo) => (
+                  <div key={todo.id}>
+                    <TaskCard
+                      todo={todo}
+                      onToggle={toggleTodo}
+                      onDelete={deleteTodo}
+                      onUpdate={updateTodo}
+                    />
+                    <button
+                      onClick={() => convertToCalendar(todo.id)}
+                      className="mt-2 rounded-lg border px-3 py-1 text-sm text-indigo-700"
+                    >
+                      Convert to calendar event
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
           ))}
 
           {todos.length === 0 && (

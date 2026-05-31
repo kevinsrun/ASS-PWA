@@ -1,4 +1,9 @@
-import { Habit, Todo } from "@/lib/types";
+import { Habit, PlanBlock, Todo } from "@/lib/types";
+import {
+  addMinutesToClock,
+  formatTimeLabel,
+  getTodayString,
+} from "@/lib/dateTime";
 
 const priorityRank = {
   high: 0,
@@ -6,36 +11,11 @@ const priorityRank = {
   low: 2,
 };
 
-function formatStart(time: string) {
-  const [hourStr, minuteStr] = time.split(":");
-  const hours = Number(hourStr);
-  const mins = minuteStr.padStart(2, "0");
-  const suffix = hours >= 12 ? "PM" : "AM";
-  const hour12 = hours % 12 === 0 ? 12 : hours % 12;
-  return `${hour12}:${mins} ${suffix}`;
-}
-
-function addMinutesToClock(time: string, minutes: number) {
-  const [hourStr, minuteStr] = time.split(":");
-  const date = new Date();
-  date.setHours(Number(hourStr), Number(minuteStr), 0, 0);
-  date.setMinutes(date.getMinutes() + minutes);
-
-  const hours = date.getHours().toString().padStart(2, "0");
-  const mins = date.getMinutes().toString().padStart(2, "0");
-
-  return `${hours}:${mins}`;
-}
-
 function formatRange(start: string, duration: number) {
-  const startLabel = formatStart(start);
+  const startLabel = formatTimeLabel(start);
   const endClock = addMinutesToClock(start, duration);
-  const endLabel = formatStart(endClock);
+  const endLabel = formatTimeLabel(endClock);
   return `${startLabel} - ${endLabel}`;
-}
-
-export function getTodayString() {
-  return new Date().toISOString().split("T")[0];
 }
 
 export function getPendingHabits(habits: Habit[]) {
@@ -47,6 +27,25 @@ export function getIncompleteTodos(todos: Todo[]) {
   return [...todos]
     .filter((todo) => !todo.done)
     .sort((a, b) => priorityRank[a.priority] - priorityRank[b.priority]);
+}
+
+export function buildPlanBlocks(todos: Todo[], habits: Habit[]): PlanBlock[] {
+  const today = getTodayString();
+  const textBlocks = buildTimeBlocks(todos, habits);
+
+  return textBlocks.map((block, index) => {
+    const [timeRange, titlePart] = block.split("  ");
+    const [startLabel, endLabel] = timeRange.split(" - ");
+
+    return {
+      id: `plan-${index}`,
+      title: titlePart ?? block,
+      date: today,
+      startLabel,
+      endLabel,
+      recurrence: "none",
+    };
+  });
 }
 
 export function buildTimeBlocks(todos: Todo[], habits: Habit[]) {

@@ -5,11 +5,17 @@ import { useAppContext } from "@/providers/AppProvider";
 import HabitCard from "@/components/HabitCard";
 
 export default function HabitsPage() {
-  const { habits, addHabit, toggleHabit, deleteHabit } = useAppContext();
+  const { habits, addHabit, toggleHabit, deleteHabit, updateHabit } =
+    useAppContext();
   const [newHabit, setNewHabit] = useState("");
+  const [category, setCategory] = useState("personal");
+  const [frequency, setFrequency] = useState("daily");
 
   function handleAddHabit() {
-    addHabit(newHabit);
+    addHabit(newHabit, {
+      category: category as never,
+      frequency: frequency as never,
+    });
     setNewHabit("");
   }
 
@@ -25,24 +31,45 @@ export default function HabitsPage() {
   ).length;
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen">
       <main className="mx-auto max-w-3xl px-6 py-10">
-        <h1 className="text-3xl font-bold">Habits</h1>
+        <h1 className="text-3xl font-bold text-emerald-950">Habits</h1>
         <p className="mt-2 text-gray-600">
           {completedTodayCount}/{habits.length} completed today
         </p>
 
-        <div className="mt-6 flex gap-2">
+        <div className="ios-card mt-6 flex flex-wrap gap-2 rounded-3xl p-4">
           <input
             value={newHabit}
             onChange={(e) => setNewHabit(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Add a habit..."
-            className="flex-1 rounded-xl border bg-white px-4 py-3"
+            className="min-h-12 flex-1 rounded-xl border bg-white px-4 py-3"
           />
+          <select
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+            className="min-h-12 rounded-xl border bg-white px-4 py-3"
+          >
+            <option value="personal">Personal</option>
+            <option value="fitness">Fitness</option>
+            <option value="school">School</option>
+            <option value="work">Work</option>
+            <option value="health">Health</option>
+          </select>
+          <select
+            value={frequency}
+            onChange={(event) => setFrequency(event.target.value)}
+            className="min-h-12 rounded-xl border bg-white px-4 py-3"
+          >
+            <option value="daily">Daily</option>
+            <option value="weekdays">Weekdays</option>
+            <option value="weekends">Weekends</option>
+            <option value="weekly">Weekly</option>
+          </select>
           <button
             onClick={handleAddHabit}
-            className="rounded-xl bg-gray-900 px-4 py-3 text-white"
+            className="min-h-12 rounded-xl bg-emerald-600 px-4 py-3 text-white"
           >
             Add
           </button>
@@ -55,6 +82,7 @@ export default function HabitsPage() {
               habit={habit}
               onToggle={toggleHabit}
               onDelete={deleteHabit}
+              onUpdate={updateHabit}
             />
           ))}
 
