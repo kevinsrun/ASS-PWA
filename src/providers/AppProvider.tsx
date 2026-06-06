@@ -20,6 +20,12 @@ import {
   SavedPlan,
 } from "@/lib/types";
 import {
+  cloudSnapshotHasData,
+  loadCloudSnapshot,
+  saveCloudSnapshot,
+} from "@/lib/supabaseData";
+import { useAuth } from "@/providers/AuthProvider";
+import {
   loadTodos,
   saveTodos,
   loadHabits,
@@ -58,6 +64,7 @@ type AppContextType = {
   chatMessages: ChatMessage[];
   codingWorkflows: CodingWorkflow[];
   profile: ProfileSettings;
+  syncStatus: string;
   addPlan: (plan: Omit<SavedPlan, "id">) => void;
   deletePlan: (id: number) => void;
   setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>;
@@ -73,6 +80,7 @@ type AppContextType = {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [todos, setTodos] = useState<Todo[]>([]);
   const [habits, setHabits] = useState<Habit[]>([]);
   const [journals, setJournals] = useState<JournalEntry[]>([]);
@@ -88,6 +96,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     gmailConnected: false,
     outlookConnected: false,
   });
+  const [hydrated, setHydrated] = useState(false);
+  const [cloudReady, setCloudReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("Local only");
 
   useEffect(() => {
     setTodos(loadTodos());
@@ -97,7 +108,55 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setChatMessages(loadChatMessages());
     setCodingWorkflows(loadCodingWorkflows());
     setProfile(loadProfileSettings());
+    setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!user) {
+      setCloudReady(false);
+      setSyncStatus("Local only");
+      return;
+    }
+
+    let cancelled = false;
+    setSyncStatus("Checking cloud data...");
+
+    loadCloudSnapshot(user.id)
+      .then(async (cloud) => {
+        if (cancelled) return;
+
+        if (cloudSnapshotHasData(cloud)) {
+          setTodos(cloud.todos);
+          setHabits(cloud.habits);
+          setJournals(cloud.journals);
+          setPlans(cloud.plans);
+          if (cloud.profile) setProfile(cloud.profile);
+          setSyncStatus("Loaded from Supabase");
+        } else {
+          await saveCloudSnapshot(user.id, {
+            todos,
+            habits,
+            journals,
+            plans,
+            profile,
+          });
+          setSyncStatus("Migrated local data to Supabase");
+        }
+
+        if (!cancelled) setCloudReady(true);
+      })
+      .catch((error) => {
+        console.error("Supabase initial sync failed:", error);
+        if (!cancelled) setSyncStatus("Cloud sync failed");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  // Run once per authenticated user after local hydration.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, user?.id]);
 
   useEffect(() => {
     saveTodos(todos);
@@ -126,6 +185,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     saveProfileSettings(profile);
   }, [profile]);
+
+  useEffect(() => {
+    if (!user || !cloudReady) return;
+
+    const timeout = window.setTimeout(() => {
+      saveCloudSnapshot(user.id, {
+        todos,
+        habits,
+        journals,
+        plans,
+        profile,
+      })
+        .then(() => setSyncStatus("Synced to Supabase"))
+        .catch((error) => {
+          console.error("Supabase save failed:", error);
+          setSyncStatus("Cloud sync failed");
+        });
+    }, 700);
+
+    return () => window.clearTimeout(timeout);
+  }, [cloudReady, habits, journals, plans, profile, todos, user]);
 
   function addTodo(
     title: string,
@@ -328,6 +408,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       chatMessages,
       codingWorkflows,
       profile,
+      syncStatus,
       addPlan,
       deletePlan,
       setChatMessages,
@@ -339,7 +420,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateHabit,
       updatePlan,
     }),
-    [todos, habits, journals, plans, chatMessages, codingWorkflows, profile]
+    [todos, habits, journals, plans, chatMessages, codingWorkflows, profile, syncStatus]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

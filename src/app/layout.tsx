@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import BottomNav from "@/components/BottomNav";
+import { AuthProvider } from "@/providers/AuthProvider";
 import { AppProvider } from "@/providers/AppProvider";
 import InstallPrompt from "@/components/InstallPrompt";
 
@@ -45,11 +46,13 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-dvh overflow-x-hidden pb-[calc(5.75rem+env(safe-area-inset-bottom))]">
-        <AppProvider>
-          {children}
-          <InstallPrompt />
-          <BottomNav />
-        </AppProvider>
+        <AuthProvider>
+          <AppProvider>
+            {children}
+            <InstallPrompt />
+            <BottomNav />
+          </AppProvider>
+        </AuthProvider>
       </body>
     </html>
   );

@@ -4,9 +4,11 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Github, Mail, BarChart3 } from "lucide-react";
 import { useAppContext } from "@/providers/AppProvider";
+import { useAuth } from "@/providers/AuthProvider";
 
 export default function ProfilePage() {
-  const { profile, updateProfile } = useAppContext();
+  const { profile, syncStatus, updateProfile } = useAppContext();
+  const { configured, user, signOut } = useAuth();
   const [googleStatus, setGoogleStatus] = useState<{
     connected: boolean;
     clientConfigured: boolean;
@@ -30,6 +32,34 @@ export default function ProfilePage() {
       </p>
 
       <section className="ios-card mt-6 rounded-3xl p-5">
+        <h2 className="text-xl font-semibold text-emerald-950">Cloud Account</h2>
+        <p className="mt-2 text-sm text-slate-600">
+          Supabase controls cloud sync. Local storage remains a cache.
+        </p>
+        <div className="mt-3 rounded-xl bg-white/80 p-3 text-sm text-slate-600">
+          <div>Supabase configured: {configured ? "Yes" : "No"}</div>
+          <div>Signed in: {user?.email ?? "No"}</div>
+          <div>Sync status: {syncStatus}</div>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Link
+            href="/login"
+            className="flex min-h-11 items-center rounded-xl bg-emerald-600 px-4 text-white"
+          >
+            {user ? "Switch account" : "Login / Signup"}
+          </Link>
+          {user && (
+            <button
+              onClick={signOut}
+              className="min-h-11 rounded-xl border border-slate-200 px-4 text-slate-700"
+            >
+              Sign out
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section className="ios-card mt-5 rounded-3xl p-5">
         <h2 className="text-xl font-semibold text-emerald-950">You</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <input
