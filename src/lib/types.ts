@@ -129,3 +129,77 @@ export type JournalSuggestion = {
   deadline?: string | null;
   intention?: string | null;
 };
+
+export type CourseStatus =
+  | "registered"
+  | "shopping"
+  | "waitlisted"
+  | "dropped"
+  | "completed";
+
+export type AcademicCourse = {
+  id: string;
+  canvasId: number;
+  name: string;
+  code: string;
+  status: CourseStatus;
+  color: string;
+  term: string | null;
+  instructor: string | null;
+  syllabusHtml: string | null;
+  currentScore: number | null;
+  currentGrade: string | null;
+  startAt: string | null;
+  endAt: string | null;
+};
+
+export type AcademicAssignment = {
+  id: string;
+  canvasId: number;
+  courseId: string;
+  courseCanvasId: number;
+  title: string;
+  descriptionHtml: string | null;
+  dueAt: string | null;
+  unlockAt: string | null;
+  pointsPossible: number | null;
+  score: number | null;
+  grade: string | null;
+  submitted: boolean;
+  submissionStatus: string;
+  submissionUrl: string | null;
+  estimatedMinutes: number;
+  difficulty: "low" | "medium" | "high";
+  priority: PlanPriority;
+  recommendedStartAt: string | null;
+  recommendedCompleteAt: string | null;
+};
+
+export type AcademicResourceType =
+  | "module"
+  | "page"
+  | "announcement"
+  | "calendar_event"
+  | "file"
+  | "discussion";
+
+export type AcademicResource = {
+  id: string;
+  courseId: string | null;
+  courseCanvasId: number | null;
+  externalId: string;
+  type: AcademicResourceType;
+  title: string;
+  url: string | null;
+  publishedAt: string | null;
+  dueAt: string | null;
+  completed: boolean;
+  metadata: Record<string, unknown>;
+};
+
+export type AcademicSnapshot = {
+  courses: AcademicCourse[];
+  assignments: AcademicAssignment[];
+  resources: AcademicResource[];
+  syncedAt: string | null;
+};

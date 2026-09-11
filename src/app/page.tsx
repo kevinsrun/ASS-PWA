@@ -1,186 +1,225 @@
 "use client";
 
 import Link from "next/link";
-import { useAppContext } from "@/providers/AppProvider";
+import {
+  ArrowRight,
+  BookOpen,
+  CalendarDays,
+  Check,
+  ChevronRight,
+  Clock3,
+  Dumbbell,
+  Flame,
+  Mail,
+  Plus,
+  Search,
+  Sparkles,
+  SunMedium,
+} from "lucide-react";
+import { getUpcomingAssignments } from "@/lib/academic";
 import { buildLearningProfile } from "@/lib/learning";
+import { useAcademicData } from "@/hooks/useAcademicData";
+import { useAppContext } from "@/providers/AppProvider";
+
+function greeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
 
 export default function Home() {
-  const { todos, habits, journals, plans } = useAppContext();
-
+  const { todos, habits, journals, plans, profile, toggleTodo, toggleHabit } =
+    useAppContext();
+  const { snapshot: academics } = useAcademicData();
   const today = new Date().toISOString().split("T")[0];
-
-  const completedTodos = todos.filter((todo) => todo.done).length;
-  const todoProgress = todos.length
-    ? Math.round((completedTodos / todos.length) * 100)
-    : 0;
-  const completedHabits = habits.filter(
-    (habit) => habit.lastCompleted === today
-  ).length;
-  const habitProgress = habits.length
-    ? Math.round((completedHabits / habits.length) * 100)
-    : 0;
-  const longestStreak =
-    habits.length > 0 ? Math.max(...habits.map((habit) => habit.streak)) : 0;
-  const overdueTodos = todos.filter(
-    (todo) => todo.dueDate && todo.dueDate < today && !todo.done
-  );
-  const upcomingPlans = plans
-    .filter((plan) => plan.date >= today)
-    .sort((a, b) => `${a.date} ${a.startLabel}`.localeCompare(`${b.date} ${b.startLabel}`))
+  const todaysPlans = plans
+    .filter((plan) => plan.date === today)
+    .sort((a, b) => a.startLabel.localeCompare(b.startLabel));
+  const criticalTasks = todos
+    .filter((todo) => !todo.done)
+    .sort((a, b) => {
+      const rank = { high: 0, medium: 1, low: 2 };
+      return rank[a.priority] - rank[b.priority];
+    })
     .slice(0, 4);
-  const learning = buildLearningProfile({
-    todos,
-    habits,
-    journals,
-    plans,
-  });
+  const pendingHabits = habits.filter((habit) => habit.lastCompleted !== today);
+  const completedTodos = todos.filter((todo) => todo.done).length;
+  const completedHabits = habits.length - pendingHabits.length;
+  const taskProgress = todos.length ? completedTodos / todos.length : 0;
+  const habitProgress = habits.length ? completedHabits / habits.length : 0;
+  const dailyProgress = Math.round((taskProgress * 0.65 + habitProgress * 0.35) * 100);
+  const longestStreak = habits.length ? Math.max(...habits.map((habit) => habit.streak)) : 0;
+  const upcomingAssignments = getUpcomingAssignments(academics.assignments, new Date(), 3);
+  const learning = buildLearningProfile({ todos, habits, journals, plans });
+  const score = Math.min(
+    100,
+    Math.round(dailyProgress * 0.65 + Math.min(longestStreak, 14) * 2.5)
+  );
+  const nextTask = criticalTasks[0];
 
   return (
-    <div className="min-h-screen">
-      <main className="mx-auto max-w-5xl px-6 py-10">
-        <h1 className="text-3xl font-bold text-emerald-950">ASS Dashboard</h1>
-        <p className="mt-2 text-gray-600">
-          Task manager, habit tracker, calendar planner, and AI assistant.
-        </p>
-
-        <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Link
-            href="/todos"
-            className="rounded-xl border border-blue-100 bg-white/90 p-5 shadow-sm hover:shadow-md"
-          >
-            <h2 className="text-xl font-semibold">To-Dos</h2>
-            <p className="mt-2 text-gray-600">
-              {completedTodos}/{todos.length} completed
-            </p>
-          </Link>
-
-          <Link
-            href="/habits"
-            className="rounded-xl border border-emerald-100 bg-white/90 p-5 shadow-sm hover:shadow-md"
-          >
-            <h2 className="text-xl font-semibold">Habits</h2>
-            <p className="mt-2 text-gray-600">
-              {completedHabits}/{habits.length} completed today
-            </p>
-          </Link>
-
-          <Link
-            href="/calendar"
-            className="rounded-xl border border-cyan-100 bg-white/90 p-5 shadow-sm hover:shadow-md"
-          >
-            <h2 className="text-xl font-semibold">Calendar</h2>
-            <p className="mt-2 text-gray-600">
-              Longest current streak: {longestStreak}
-            </p>
-          </Link>
-
-          <Link
-            href="/chat"
-            className="rounded-xl border border-indigo-100 bg-white/90 p-5 shadow-sm hover:shadow-md"
-          >
-            <h2 className="text-xl font-semibold">AI Chat</h2>
-            <p className="mt-2 text-gray-600">
-              Plan your day with your live data
-            </p>
+    <main className="command-shell">
+      <header className="command-header">
+        <div>
+          <div className="command-date">
+            {new Intl.DateTimeFormat("en-US", {
+              weekday: "long",
+              month: "long",
+              day: "numeric",
+            }).format(new Date())}
+          </div>
+          <h1>{greeting()}, {profile.displayName || "Kevin"}</h1>
+          <p>Your day is clear enough to make meaningful progress.</p>
+        </div>
+        <div className="command-actions">
+          <button type="button" aria-label="Search ASS"><Search size={19} /></button>
+          <Link href="/todos" aria-label="Add a task"><Plus size={20} /></Link>
+          <Link href="/profile" className="command-avatar" aria-label="Open profile">
+            {(profile.displayName || "K").slice(0, 1).toUpperCase()}
           </Link>
         </div>
+      </header>
 
-        <div className="mt-8 grid gap-4 lg:grid-cols-[1fr_1fr]">
-          <section className="rounded-xl border border-emerald-100 bg-gradient-to-br from-white to-emerald-50 p-5 shadow-sm lg:col-span-2">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold">Adaptive Learning</h2>
-                <p className="mt-1 text-sm text-gray-600">
-                  The app is adapting toward {learning.guiDensity} density,{" "}
-                  {learning.preferredTimeOfDay} scheduling, and{" "}
-                  {learning.preferredCategory} as your strongest category.
-                </p>
-              </div>
-              <div className="rounded-full bg-indigo-50 px-3 py-1 text-sm font-medium text-indigo-700">
-                {learning.workload} workload
-              </div>
-            </div>
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              {learning.strategies.slice(0, 2).map((strategy) => (
-                <div key={strategy.id} className="rounded-lg bg-slate-50 p-4">
-                  <div className="font-medium">{strategy.title}</div>
-                  <p className="mt-1 text-sm text-gray-600">{strategy.body}</p>
-                  <div className="mt-2 text-sm font-medium text-indigo-700">
-                    {strategy.action}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-blue-100 bg-white/90 p-5 shadow-sm">
-            <h2 className="text-lg font-semibold">Today Progress</h2>
-            <div className="mt-4 space-y-4">
-              <div>
-                <div className="flex justify-between text-sm text-gray-600">
-                  <span>Tasks</span>
-                  <span>{todoProgress}%</span>
-                </div>
-                <div className="mt-2 h-2 rounded-full bg-slate-100">
-                  <div
-                    className="h-2 rounded-full bg-indigo-500"
-                    style={{ width: `${todoProgress}%` }}
-                  />
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between text-sm text-gray-600">
-                  <span>Habits</span>
-                  <span>{habitProgress}%</span>
-                </div>
-                <div className="mt-2 h-2 rounded-full bg-slate-100">
-                  <div
-                    className="h-2 rounded-full bg-emerald-500"
-                    style={{ width: `${habitProgress}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-cyan-100 bg-white/90 p-5 shadow-sm">
-            <h2 className="text-lg font-semibold">Upcoming Schedule</h2>
-            <div className="mt-4 space-y-3">
-              {upcomingPlans.map((plan) => (
-                <div key={plan.id} className="rounded-lg bg-slate-50 p-3">
-                  <div className="font-medium">{plan.title}</div>
-                  <div className="text-sm text-gray-500">
-                    {plan.date} · {plan.startLabel}
-                  </div>
-                </div>
-              ))}
-              {upcomingPlans.length === 0 && (
-                <div className="text-sm text-gray-500">Nothing scheduled.</div>
-              )}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-amber-900 shadow-sm">
-            <h2 className="text-lg font-semibold">Overdue Warning</h2>
-            <p className="mt-2 text-sm">
-              {overdueTodos.length
-                ? `${overdueTodos.length} overdue task(s) need attention.`
-                : "No overdue tasks right now."}
-            </p>
-          </section>
-
-          <section className="rounded-xl border border-indigo-100 bg-white/90 p-5 shadow-sm">
-            <h2 className="text-lg font-semibold">AI Recommendation</h2>
-            <p className="mt-2 text-sm text-gray-600">
-              {overdueTodos.length
-                ? "Clear one overdue task before adding new plans."
-                : completedHabits < habits.length
-                ? "Finish a pending habit before the next focus block."
-                : "Use the calendar optimizer to protect a focused work block."}
-            </p>
-          </section>
+      <section className="morning-brief-card">
+        <div className="brief-glow" aria-hidden="true" />
+        <div className="brief-copy">
+          <div className="ass-eyebrow ass-eyebrow--light">
+            <SunMedium size={15} /> Daily briefing
+          </div>
+          <h2>{nextTask ? `Protect time for ${nextTask.title}` : "A calm start to your day"}</h2>
+          <p>
+            {nextTask
+              ? `${criticalTasks.length} open task${criticalTasks.length === 1 ? "" : "s"}, ${pendingHabits.length} habit${pendingHabits.length === 1 ? "" : "s"}, and ${upcomingAssignments.length} upcoming assignment${upcomingAssignments.length === 1 ? "" : "s"}.`
+              : "Add your priorities and ASS will shape them into focused calendar blocks."}
+          </p>
+          <div className="brief-actions">
+            <Link href="/calendar">Plan my day <ArrowRight size={16} /></Link>
+            <Link href="/chat">Ask ASS</Link>
+          </div>
         </div>
-      </main>
-    </div>
+        <div className="brief-score">
+          <div
+            className="progress-ring"
+            style={{ "--progress": `${score * 3.6}deg` } as React.CSSProperties}
+          >
+            <div><strong>{score}</strong><span>score</span></div>
+          </div>
+          <small>Productivity score</small>
+        </div>
+      </section>
+
+      <section className="command-metrics" aria-label="Today at a glance">
+        <Link href="/calendar" className="command-metric">
+          <span className="metric-icon metric-icon--violet"><CalendarDays size={18} /></span>
+          <div><strong>{todaysPlans.length}</strong><span>events today</span></div>
+          <ChevronRight size={16} />
+        </Link>
+        <Link href="/todos" className="command-metric">
+          <span className="metric-icon metric-icon--orange"><Check size={18} /></span>
+          <div><strong>{criticalTasks.length}</strong><span>critical tasks</span></div>
+          <ChevronRight size={16} />
+        </Link>
+        <Link href="/academics" className="command-metric">
+          <span className="metric-icon metric-icon--green"><BookOpen size={18} /></span>
+          <div><strong>{upcomingAssignments.length}</strong><span>assignments next</span></div>
+          <ChevronRight size={16} />
+        </Link>
+        <Link href="/calendar" className="command-metric">
+          <span className="metric-icon metric-icon--blue"><Mail size={18} /></span>
+          <div><strong>AI</strong><span>inbox triage</span></div>
+          <ChevronRight size={16} />
+        </Link>
+      </section>
+
+      <div className="command-grid">
+        <section className="ass-panel schedule-panel">
+          <div className="ass-panel-heading">
+            <div><span className="ass-kicker">Today</span><h2>Your schedule</h2></div>
+            <Link href="/calendar" className="ass-text-link">Full calendar <ChevronRight size={15} /></Link>
+          </div>
+          <div className="schedule-list">
+            {todaysPlans.slice(0, 5).map((plan, index) => (
+              <article key={plan.id} className="schedule-row">
+                <div className="schedule-time"><strong>{plan.startLabel}</strong><span>{plan.endLabel}</span></div>
+                <div className="schedule-line" aria-hidden="true">
+                  <span className={`schedule-dot schedule-dot--${plan.category ?? "other"}`} />
+                  {index < todaysPlans.slice(0, 5).length - 1 && <i />}
+                </div>
+                <div className="schedule-content"><h3>{plan.title}</h3><p>{plan.category ?? "Personal"}{plan.notes ? ` · ${plan.notes}` : ""}</p></div>
+              </article>
+            ))}
+            {todaysPlans.length === 0 && (
+              <div className="ass-empty-state">
+                <Clock3 size={22} />
+                <div><strong>No blocks yet</strong><p>Give your priorities a place on today’s calendar.</p></div>
+                <Link href="/calendar">Build day</Link>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="ass-panel tasks-panel">
+          <div className="ass-panel-heading">
+            <div><span className="ass-kicker">Focus</span><h2>Critical tasks</h2></div>
+            <Link href="/todos" className="ass-text-link">All tasks <ChevronRight size={15} /></Link>
+          </div>
+          <div className="focus-task-list">
+            {criticalTasks.map((todo) => (
+              <button key={todo.id} type="button" onClick={() => toggleTodo(todo.id)} className="focus-task">
+                <span className={`task-check task-check--${todo.priority}`}><Check size={13} /></span>
+                <span className="focus-task-copy"><strong>{todo.title}</strong><small>{todo.duration} min{todo.dueDate ? ` · due ${todo.dueDate}` : ""}</small></span>
+                <span className={`priority-pill priority-pill--${todo.priority}`}>{todo.priority}</span>
+              </button>
+            ))}
+            {criticalTasks.length === 0 && (
+              <div className="ass-empty-state"><Check size={22} /><div><strong>Nothing urgent</strong><p>Your highest-priority tasks will stay visible here.</p></div></div>
+            )}
+          </div>
+        </section>
+
+        <section className="ass-panel academic-preview-panel">
+          <div className="ass-panel-heading">
+            <div><span className="ass-kicker">Brown</span><h2>Academic outlook</h2></div>
+            <Link href="/academics" className="ass-text-link">Command center <ChevronRight size={15} /></Link>
+          </div>
+          {upcomingAssignments.length > 0 ? (
+            <div className="academic-preview-list">
+              {upcomingAssignments.map((assignment) => (
+                <article key={assignment.id}>
+                  <span className={`priority-dot priority-dot--${assignment.priority}`} />
+                  <div><strong>{assignment.title}</strong><small>{assignment.dueAt ? new Date(assignment.dueAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "No due date"} · {assignment.estimatedMinutes} min</small></div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="ass-empty-state"><BookOpen size={22} /><div><strong>Canvas is ready to connect</strong><p>Bring classes and assignments into the same weekly plan.</p></div></div>
+          )}
+        </section>
+
+        <section className="ass-panel habits-panel">
+          <div className="ass-panel-heading">
+            <div><span className="ass-kicker">Momentum</span><h2>Habits & energy</h2></div>
+            <span className="streak-pill"><Flame size={14} /> {longestStreak} day streak</span>
+          </div>
+          <div className="habit-quick-list">
+            {habits.slice(0, 3).map((habit) => {
+              const done = habit.lastCompleted === today;
+              return (
+                <button key={habit.id} type="button" onClick={() => toggleHabit(habit.id)} disabled={done}>
+                  <span className={done ? "is-done" : ""}>{done ? <Check size={15} /> : habit.category === "fitness" ? <Dumbbell size={15} /> : <Sparkles size={15} />}</span>
+                  <strong>{habit.name}</strong>
+                  <small>{done ? "Done" : "Check in"}</small>
+                </button>
+              );
+            })}
+            {habits.length === 0 && (
+              <div className="ass-empty-state"><Flame size={22} /><div><strong>Build your rhythm</strong><p>Add habits to track consistency without crowding your day.</p></div></div>
+            )}
+          </div>
+          <div className="learning-note"><Sparkles size={17} /><p><strong>ASS is adapting.</strong> Your plan currently favors {learning.preferredTimeOfDay} focus and a {learning.workload} workload.</p></div>
+        </section>
+      </div>
+    </main>
   );
 }

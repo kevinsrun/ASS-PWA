@@ -10,7 +10,7 @@ export const metadata: Metadata = {
     default: "ASS",
     template: "%s | ASS",
   },
-  description: "Automated AI schedule system for tasks, habits, journal, calendar, and email intake.",
+  description: "A personal Life OS for scheduling, academics, habits, email, and AI-assisted planning.",
   applicationName: "ASS",
   manifest: "/manifest.json",
   appleWebApp: {
@@ -31,7 +31,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#10b981",
+  themeColor: "#5856d6",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
