@@ -271,5 +271,11 @@ grant select, insert, update, delete on table public.profiles, public.todos,
   public.academic_assignments, public.academic_resources to authenticated;
 grant select on table public.academic_sync_runs to authenticated;
 
--- Cron jobs should use SUPABASE_SERVICE_ROLE_KEY, which bypasses RLS.
+grant usage, select on sequence public.todos_id_seq, public.habits_id_seq,
+  public.habit_completions_id_seq, public.journal_entries_id_seq,
+  public.plans_id_seq, public.email_suggestions_id_seq,
+  public.academic_sync_runs_id_seq to authenticated;
+
+-- Cron jobs should use SUPABASE_SECRET_KEY (or the legacy service-role key),
+-- which bypasses RLS. Keep either value server-only.
 -- No public policy is defined for cron_runs.
