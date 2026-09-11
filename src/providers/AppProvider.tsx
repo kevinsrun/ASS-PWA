@@ -2,6 +2,7 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -65,6 +66,7 @@ type AppContextType = {
   codingWorkflows: CodingWorkflow[];
   profile: ProfileSettings;
   syncStatus: string;
+  reloadCloud: () => Promise<void>;
   addPlan: (plan: Omit<SavedPlan, "id">) => void;
   deletePlan: (id: number) => void;
   setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>;
@@ -390,6 +392,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  const reloadCloud = useCallback(async () => {
+    if (!user) return;
+    setSyncStatus("Refreshing cloud data...");
+    try {
+      const cloud = await loadCloudSnapshot(user.id);
+      setTodos(cloud.todos);
+      setHabits(cloud.habits);
+      setJournals(cloud.journals);
+      setPlans(cloud.plans);
+      if (cloud.profile) setProfile(cloud.profile);
+      setSyncStatus("Synced to Supabase");
+    } catch (error) {
+      console.error("Supabase refresh failed:", error);
+      setSyncStatus("Cloud sync failed");
+      throw error;
+    }
+  }, [user]);
+
   const value = useMemo(
     () => ({
       todos,
@@ -409,6 +429,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       codingWorkflows,
       profile,
       syncStatus,
+      reloadCloud,
       addPlan,
       deletePlan,
       setChatMessages,
@@ -420,7 +441,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateHabit,
       updatePlan,
     }),
-    [todos, habits, journals, plans, chatMessages, codingWorkflows, profile, syncStatus]
+    [
+      todos,
+      habits,
+      journals,
+      plans,
+      chatMessages,
+      codingWorkflows,
+      profile,
+      syncStatus,
+      reloadCloud,
+    ]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

@@ -1,177 +1,138 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Github, Mail, BarChart3 } from "lucide-react";
+import {
+  BarChart3,
+  CalendarDays,
+  ChevronRight,
+  Cloud,
+  Github,
+  LogOut,
+  UserRound,
+} from "lucide-react";
+import CalendarSyncIndicator from "@/components/CalendarSyncIndicator";
+import { useCalendarSync } from "@/hooks/useCalendarSync";
 import { useAppContext } from "@/providers/AppProvider";
 import { useAuth } from "@/providers/AuthProvider";
 
 export default function ProfilePage() {
-  const { profile, syncStatus, updateProfile } = useAppContext();
+  const { profile, syncStatus, updateProfile, reloadCloud } = useAppContext();
   const { configured, user, signOut } = useAuth();
-  const [googleStatus, setGoogleStatus] = useState<{
-    connected: boolean;
-    clientConfigured: boolean;
-    redirectUri: string;
-  } | null>(null);
-
-  const githubReady = Boolean(profile.githubUsername && profile.githubRepo);
-
-  useEffect(() => {
-    fetch("/api/auth/google/status")
-      .then((response) => response.json())
-      .then(setGoogleStatus)
-      .catch(() => setGoogleStatus(null));
-  }, []);
+  const calendarSync = useCalendarSync(reloadCloud);
+  const initials = (profile.displayName || user?.email || "A")
+    .split(/\s|@/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
 
   return (
-    <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
-      <h1 className="text-3xl font-bold text-emerald-950">Profile</h1>
-      <p className="mt-2 text-slate-600">
-        Account connections, personal defaults, and automation settings.
-      </p>
+    <main className="settings-page">
+      <header className="settings-header">
+        <p>ASS</p>
+        <h1>Settings</h1>
+      </header>
 
-      <section className="ios-card mt-6 rounded-3xl p-5">
-        <h2 className="text-xl font-semibold text-emerald-950">Cloud Account</h2>
-        <p className="mt-2 text-sm text-slate-600">
-          Supabase controls cloud sync. Local storage remains a cache.
-        </p>
-        <div className="mt-3 rounded-xl bg-white/80 p-3 text-sm text-slate-600">
-          <div>Supabase configured: {configured ? "Yes" : "No"}</div>
-          <div>Signed in: {user?.email ?? "No"}</div>
-          <div>Sync status: {syncStatus}</div>
+      <section className="settings-identity" aria-label="Profile">
+        <div className="settings-avatar" aria-hidden="true">{initials}</div>
+        <div>
+          <strong>{profile.displayName || "Your profile"}</strong>
+          <span>{user?.email ?? "Local account"}</span>
         </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Link
-            href="/login"
-            className="flex min-h-11 items-center rounded-xl bg-emerald-600 px-4 text-white"
-          >
-            {user ? "Switch account" : "Login / Signup"}
+      </section>
+
+      <section className="settings-section">
+        <h2>Personal</h2>
+        <div className="settings-group">
+          <label className="settings-field">
+            <span><UserRound size={19} aria-hidden="true" />Name</span>
+            <input
+              value={profile.displayName}
+              onChange={(event) => updateProfile({ displayName: event.target.value })}
+              placeholder="Display name"
+            />
+          </label>
+          <label className="settings-field">
+            <span>Email</span>
+            <input
+              type="email"
+              value={profile.primaryEmail}
+              onChange={(event) => updateProfile({ primaryEmail: event.target.value })}
+              placeholder={user?.email ?? "Primary email"}
+            />
+          </label>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h2>Sync</h2>
+        <div className="settings-group">
+          <div className="settings-row">
+            <Cloud size={20} aria-hidden="true" />
+            <div>
+              <strong>ASS Cloud</strong>
+              <span>
+                {!configured
+                  ? "Setup incomplete"
+                  : user
+                    ? syncStatus
+                    : "Sign in to sync across devices"}
+              </span>
+            </div>
+            <Link href="/login" aria-label={user ? "Change account" : "Sign in"}>
+              {user ? "Account" : "Sign in"}<ChevronRight size={17} />
+            </Link>
+          </div>
+          <div className="settings-row settings-row--calendar">
+            <CalendarDays size={20} aria-hidden="true" />
+            <CalendarSyncIndicator
+              status={calendarSync.status}
+              loading={calendarSync.loading}
+              onSync={() => void calendarSync.syncNow()}
+              onConnect={() => void calendarSync.connect()}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h2>Developer</h2>
+        <div className="settings-group">
+          <div className="settings-row settings-row--fields">
+            <Github size={20} aria-hidden="true" />
+            <div>
+              <strong>GitHub target</strong>
+              <div className="settings-inline-fields">
+                <input
+                  value={profile.githubUsername}
+                  onChange={(event) =>
+                    updateProfile({ githubUsername: event.target.value })
+                  }
+                  placeholder="Username"
+                  aria-label="GitHub username"
+                />
+                <input
+                  value={profile.githubRepo}
+                  onChange={(event) => updateProfile({ githubRepo: event.target.value })}
+                  placeholder="owner/repository"
+                  aria-label="GitHub repository"
+                />
+              </div>
+            </div>
+          </div>
+          <Link href="/analytics" className="settings-row settings-row--link">
+            <BarChart3 size={20} aria-hidden="true" />
+            <div><strong>Analytics</strong><span>Review activity and trends</span></div>
+            <ChevronRight size={17} aria-hidden="true" />
           </Link>
-          {user && (
-            <button
-              onClick={signOut}
-              className="min-h-11 rounded-xl border border-slate-200 px-4 text-slate-700"
-            >
-              Sign out
-            </button>
-          )}
         </div>
       </section>
 
-      <section className="ios-card mt-5 rounded-3xl p-5">
-        <h2 className="text-xl font-semibold text-emerald-950">You</h2>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <input
-            value={profile.displayName}
-            onChange={(event) => updateProfile({ displayName: event.target.value })}
-            placeholder="Display name"
-            className="min-h-12 rounded-xl border border-emerald-100 px-4"
-          />
-          <input
-            value={profile.primaryEmail}
-            onChange={(event) => updateProfile({ primaryEmail: event.target.value })}
-            placeholder="Primary email"
-            className="min-h-12 rounded-xl border border-emerald-100 px-4"
-          />
-        </div>
-      </section>
-
-      <section className="ios-card mt-5 rounded-3xl p-5">
-        <div className="flex items-center gap-2">
-          <Github className="text-gray-900" size={20} />
-          <h2 className="text-xl font-semibold text-emerald-950">GitHub</h2>
-        </div>
-        <p className="mt-2 text-sm text-slate-600">
-          ASS uses this repo for review-gated overnight coding workflows. OAuth can be added later; for now this saves the repo target used by the local runner.
-        </p>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <input
-            value={profile.githubUsername}
-            onChange={(event) =>
-              updateProfile({
-                githubUsername: event.target.value,
-                githubConnected: Boolean(event.target.value && profile.githubRepo),
-              })
-            }
-            placeholder="GitHub username"
-            className="min-h-12 rounded-xl border border-emerald-100 px-4"
-          />
-          <input
-            value={profile.githubRepo}
-            onChange={(event) =>
-              updateProfile({
-                githubRepo: event.target.value,
-                githubConnected: Boolean(profile.githubUsername && event.target.value),
-              })
-            }
-            placeholder="Repo, e.g. kevin/ass-pwa"
-            className="min-h-12 rounded-xl border border-emerald-100 px-4"
-          />
-        </div>
-        <div className="mt-3 rounded-xl bg-blue-50 p-3 text-sm text-blue-800">
-          Status: {githubReady ? "GitHub target saved" : "Add username and repo"}
-        </div>
-      </section>
-
-      <section className="ios-card mt-5 rounded-3xl p-5">
-        <div className="flex items-center gap-2">
-          <Mail className="text-emerald-600" size={20} />
-          <h2 className="text-xl font-semibold text-emerald-950">Email & Calendar</h2>
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <a
-            href="/api/auth/google"
-            className="flex min-h-12 items-center justify-center rounded-xl bg-emerald-600 px-4 text-white"
-          >
-            Connect Gmail / Google Calendar
-          </a>
-          <button
-            disabled
-            className="min-h-12 rounded-xl border border-slate-200 px-4 text-slate-400"
-          >
-            Outlook later
-          </button>
-        </div>
-        <p className="mt-3 text-sm text-slate-500">
-          If Google says the app is in testing, add your Gmail as a test user in Google Cloud OAuth consent screen and make sure the redirect URI exactly matches your `.env.local` value.
-        </p>
-        <div className="mt-3 rounded-xl bg-white/80 p-3 text-sm text-slate-600">
-          <div>Google status: {googleStatus?.connected ? "Connected" : "Not connected"}</div>
-          <div>Client configured: {googleStatus?.clientConfigured ? "Yes" : "No"}</div>
-          <div className="break-all">Redirect URI: {googleStatus?.redirectUri || "Missing"}</div>
-        </div>
-      </section>
-
-      <section className="ios-card mt-5 rounded-3xl p-5">
-        <h2 className="text-xl font-semibold text-emerald-950">Vercel Cron</h2>
-        <p className="mt-2 text-sm text-slate-600">
-          ASS uses two daily Vercel cron jobs: morning scan and evening review.
-          Schedules are stored in `vercel.json` and run in UTC.
-        </p>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <a
-            href="/api/cron/morning"
-            className="flex min-h-12 items-center justify-center rounded-xl border border-emerald-100 bg-white px-4 text-emerald-700"
-          >
-            Test Morning Cron
-          </a>
-          <a
-            href="/api/cron/evening"
-            className="flex min-h-12 items-center justify-center rounded-xl border border-blue-100 bg-white px-4 text-blue-700"
-          >
-            Test Evening Cron
-          </a>
-        </div>
-      </section>
-
-      <Link
-        href="/analytics"
-        className="ios-card mt-5 flex items-center gap-3 rounded-3xl p-5 text-emerald-800"
-      >
-        <BarChart3 size={20} />
-        Open Analytics
-      </Link>
+      {user ? (
+        <button className="settings-signout" type="button" onClick={() => void signOut()}>
+          <LogOut size={18} aria-hidden="true" />Sign out
+        </button>
+      ) : null}
     </main>
   );
 }

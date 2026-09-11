@@ -10,7 +10,6 @@ import {
   Clock,
   Mail,
   Plus,
-  Sparkles,
   Trash2,
   Wand2,
   X,
@@ -34,6 +33,9 @@ import { getIncompleteTodos, getPendingHabits } from "@/lib/planner";
 import { getUsFederalHolidaysForDates } from "@/lib/holidays";
 import { buildLearningProfile } from "@/lib/learning";
 import { useAppContext } from "@/providers/AppProvider";
+import { useAuth } from "@/providers/AuthProvider";
+import { useCalendarSync } from "@/hooks/useCalendarSync";
+import CalendarSyncIndicator from "@/components/CalendarSyncIndicator";
 
 type OptimizerSuggestion = {
   id: string;
@@ -205,7 +207,7 @@ function getVisiblePlans(plans: SavedPlan[], dateKey: string) {
 }
 
 function getConflicts(plans: SavedPlan[], dateKey: string) {
-  const visible = getVisiblePlans(plans, dateKey);
+  const visible = getVisiblePlans(plans, dateKey).filter((plan) => !plan.allDay);
   const conflicts: Array<{ a: SavedPlan; b: SavedPlan }> = [];
 
   visible.forEach((plan, index) => {
@@ -311,7 +313,10 @@ export default function CalendarPage() {
     deletePlan,
     updatePlan,
     toggleHabit,
+    reloadCloud,
   } = useAppContext();
+  const { session } = useAuth();
+  const calendarSync = useCalendarSync(reloadCloud);
   const [selectedDate, setSelectedDate] = useState(getTodayString());
   const [title, setTitle] = useState("");
   const [date, setDate] = useState(getTodayString());
@@ -376,7 +381,7 @@ export default function CalendarPage() {
   const pendingHabits = getPendingHabits(habits);
   const learning = buildLearningProfile({ todos, habits, journals, plans });
   const selectedDayPlans = useMemo(
-    () => getVisiblePlans(plans, selectedDate),
+    () => getVisiblePlans(plans, selectedDate).filter((plan) => !plan.allDay),
     [plans, selectedDate]
   );
   const selectedOpenGaps = useMemo(
@@ -561,7 +566,11 @@ export default function CalendarPage() {
     setEmailImportStatus("Scanning recent Gmail messages for schedule items...");
 
     try {
-      const response = await fetch("/api/gmail/import");
+      const response = await fetch("/api/gmail/import", {
+        headers: session?.access_token
+          ? { Authorization: `Bearer ${session.access_token}` }
+          : {},
+      });
       const data = (await response.json()) as {
         connected?: boolean;
         suggestions?: EmailCalendarSuggestion[];
@@ -607,7 +616,9 @@ export default function CalendarPage() {
     const suggestions: OptimizerSuggestion[] = [];
 
     weekDays.forEach((day) => {
-      const dayPlans = getVisiblePlans(plans, day.key);
+      const dayPlans = getVisiblePlans(plans, day.key).filter(
+        (plan) => !plan.allDay
+      );
       const slots = findOpenSlots(dayPlans, 45, 2);
 
       slots.forEach((slot, index) => {
@@ -652,19 +663,18 @@ export default function CalendarPage() {
 
   return (
     <div className="min-h-screen text-slate-950">
-      <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
-        <div className="flex flex-col gap-4 rounded-lg border border-emerald-100 bg-white/90 p-5 shadow-sm shadow-emerald-100 xl:flex-row xl:items-center xl:justify-between">
+      <main className="calendar-page mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
+        <div className="calendar-header flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
-            <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
-              <Sparkles size={14} />
-              Master automated schedule
-            </div>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight">
-              Week Calendar
-            </h1>
-            <p className="mt-1 text-sm text-slate-600">
-              Drag events between days, detect conflicts, approve AI cards, and keep 20% of the week open.
-            </p>
+            <p className="calendar-eyebrow">Schedule</p>
+            <h1>Calendar</h1>
+            <CalendarSyncIndicator
+              compact
+              status={calendarSync.status}
+              loading={calendarSync.loading}
+              onSync={() => void calendarSync.syncNow()}
+              onConnect={() => void calendarSync.connect()}
+            />
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -969,7 +979,7 @@ export default function CalendarPage() {
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
                   onClick={() => {
-                    window.location.href = "/api/auth/google";
+                    void calendarSync.connect();
                   }}
                   className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
                 >
@@ -1282,15 +1292,6 @@ export default function CalendarPage() {
                   </div>
                 </div>
 
-                <div className="mt-5 space-y-3 text-sm">
-                  <div className="font-semibold text-slate-700">My calendars</div>
-                  {(Object.keys(CATEGORIES) as PlanCategory[]).map((item) => (
-                    <div key={item} className="flex items-center gap-2 text-slate-600">
-                      <span className={`h-3 w-3 rounded-sm ${CATEGORIES[item].dot}`} />
-                      {CATEGORIES[item].label}
-                    </div>
-                  ))}
-                </div>
               </aside>
 
               <div className="overflow-x-auto">
@@ -1300,7 +1301,7 @@ export default function CalendarPage() {
                   style={{ gridTemplateColumns: desktopGridColumns }}
                 >
                   <div className="border-r border-slate-200 bg-slate-50 px-3 py-3 text-xs font-medium text-slate-500">
-                    GMT-5
+                    Local time
                   </div>
                   {calendarDays.map((day) => {
                     const dayConflicts = getConflicts(plans, day.key);
@@ -1355,6 +1356,9 @@ export default function CalendarPage() {
                     const holiday = weekHolidays.find(
                       (item) => item.date === day.key
                     );
+                    const allDayPlans = getVisiblePlans(plans, day.key).filter(
+                      (plan) => plan.allDay
+                    );
 
                     return (
                       <div
@@ -1370,6 +1374,14 @@ export default function CalendarPage() {
                             </span>
                           </div>
                         )}
+                        {allDayPlans.map((plan) => (
+                          <div
+                            key={`${plan.id}-${day.key}-all-day`}
+                            className="mt-1 truncate rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-800"
+                          >
+                            {plan.title}
+                          </div>
+                        ))}
                       </div>
                     );
                   })}
@@ -1397,7 +1409,9 @@ export default function CalendarPage() {
                   </div>
 
                   {calendarDays.map((day) => {
-                    const dayPlans = getVisiblePlans(plans, day.key);
+                    const dayPlans = getVisiblePlans(plans, day.key).filter(
+                      (plan) => !plan.allDay
+                    );
                     const dayOpenGaps = getOpenGaps(dayPlans, 45);
                     const conflicts = getConflicts(plans, day.key);
                     const conflictIds = new Set(

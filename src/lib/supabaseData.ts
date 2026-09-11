@@ -83,6 +83,9 @@ type PlanRow = {
   custom_recurrence?: string | null;
   series_id?: string | null;
   excluded_dates?: string[] | null;
+  source?: SavedPlan["source"] | null;
+  google_event_id?: string | null;
+  all_day?: boolean | null;
 };
 
 function hasCoreData(snapshot: CloudSnapshot) {
@@ -116,6 +119,12 @@ export async function loadCloudSnapshot(userId: string): Promise<CloudSnapshot> 
       .order("date", { ascending: false }),
     supabase.from("plans").select("*").eq("user_id", userId).order("date"),
   ]);
+  const queryError = [profile, todos, habits, journals, plans].find(
+    (result) => result.error
+  )?.error;
+  if (queryError) {
+    throw new Error(`Supabase load failed: ${queryError.message}`);
+  }
   const profileRow = profile.data as ProfileRow | null;
   const todoRows = (todos.data ?? []) as TodoRow[];
   const habitRows = (habits.data ?? []) as HabitRow[];
@@ -179,6 +188,9 @@ export async function loadCloudSnapshot(userId: string): Promise<CloudSnapshot> 
         customRecurrence: plan.custom_recurrence ?? "",
         seriesId: plan.series_id ?? undefined,
         excludedDates: plan.excluded_dates ?? [],
+        source: plan.source ?? "ass",
+        googleEventId: plan.google_event_id ?? undefined,
+        allDay: Boolean(plan.all_day),
       })),
   };
 }
@@ -187,7 +199,7 @@ export async function saveCloudSnapshot(userId: string, snapshot: LocalSnapshot)
   const supabase = getBrowserSupabaseClient();
   if (!supabase) return;
 
-  await supabase.from("profiles").upsert({
+  const { error: profileError } = await supabase.from("profiles").upsert({
     user_id: userId,
     display_name: snapshot.profile.displayName,
     primary_email: snapshot.profile.primaryEmail,
@@ -198,6 +210,9 @@ export async function saveCloudSnapshot(userId: string, snapshot: LocalSnapshot)
     outlook_connected: snapshot.profile.outlookConnected,
     updated_at: new Date().toISOString(),
   });
+  if (profileError) {
+    throw new Error(`Supabase profile save failed: ${profileError.message}`);
+  }
 
   await Promise.all([
     replaceRows(userId, "todos", snapshot.todos.map(todoToRow)),
@@ -215,16 +230,25 @@ async function replaceRows(
   const supabase = getBrowserSupabaseClient();
   if (!supabase) return;
 
-  await supabase.from(table).delete().eq("user_id", userId);
+  const { error: deleteError } = await supabase
+    .from(table)
+    .delete()
+    .eq("user_id", userId);
+  if (deleteError) {
+    throw new Error(`Supabase ${table} replace failed: ${deleteError.message}`);
+  }
   if (rows.length === 0) return;
 
-  await supabase.from(table).insert(
+  const { error: insertError } = await supabase.from(table).insert(
     rows.map((row) => ({
       ...row,
       user_id: userId,
       updated_at: new Date().toISOString(),
     }))
   );
+  if (insertError) {
+    throw new Error(`Supabase ${table} insert failed: ${insertError.message}`);
+  }
 }
 
 function todoToRow(todo: Todo) {
@@ -282,5 +306,8 @@ function planToRow(plan: SavedPlan) {
     custom_recurrence: plan.customRecurrence ?? "",
     series_id: plan.seriesId ?? null,
     excluded_dates: plan.excludedDates ?? [],
+    source: plan.source ?? "ass",
+    google_event_id: plan.googleEventId ?? null,
+    all_day: plan.allDay ?? false,
   };
 }

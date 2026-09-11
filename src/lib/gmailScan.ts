@@ -2,7 +2,7 @@ import {
   EmailCalendarSuggestion,
   parseEmailCalendarSuggestion,
 } from "@/lib/emailParser";
-import { getGoogleAccessToken, isGmailConnected } from "@/lib/googleAuth";
+import { getGoogleAccessToken, readStoredGoogleToken } from "@/lib/googleAuth";
 
 type GmailMessageList = {
   messages?: Array<{ id: string }>;
@@ -42,12 +42,12 @@ async function gmailFetch<T>(url: string, accessToken: string) {
   return (await response.json()) as T;
 }
 
-export async function scanRecentGmailSuggestions() {
-  if (!(await isGmailConnected())) {
+export async function scanRecentGmailSuggestions(userId: string) {
+  if (!(await readStoredGoogleToken(userId))) {
     return { connected: false, suggestions: [] };
   }
 
-  const accessToken = await getGoogleAccessToken();
+  const accessToken = await getGoogleAccessToken(userId);
   const query = encodeURIComponent(
     'newer_than:45d (appointment OR meeting OR class OR exam OR event OR schedule OR due OR deadline OR "calendar invite")'
   );

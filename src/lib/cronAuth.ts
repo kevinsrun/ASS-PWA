@@ -4,7 +4,10 @@ export function verifyCronRequest(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
 
   if (!secret) {
-    return null;
+    return NextResponse.json(
+      { error: "CRON_SECRET is not configured" },
+      { status: 503 }
+    );
   }
 
   const authorization = req.headers.get("authorization");

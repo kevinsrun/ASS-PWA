@@ -85,6 +85,8 @@ create table if not exists public.plans (
   series_id text,
   excluded_dates jsonb default '[]'::jsonb,
   google_event_id text,
+  source text not null default 'ass' check (source in ('ass', 'google')),
+  all_day boolean not null default false,
   updated_at timestamptz default now(),
   unique(user_id, local_id)
 );
@@ -101,7 +103,7 @@ create table if not exists public.email_suggestions (
   source text default '',
   status text default 'pending',
   created_at timestamptz default now(),
-  unique(external_id)
+  unique(user_id, external_id)
 );
 
 create table if not exists public.google_tokens (
@@ -111,6 +113,11 @@ create table if not exists public.google_tokens (
   scope text,
   token_type text,
   expires_at bigint,
+  last_sync_status text not null default 'ready',
+  last_sync_error text,
+  last_sync_attempt_at timestamptz,
+  last_successful_sync_at timestamptz,
+  calendar_time_zone text not null default 'UTC',
   updated_at timestamptz default now()
 );
 
@@ -243,8 +250,6 @@ drop policy if exists "email suggestions owner access" on public.email_suggestio
 create policy "email suggestions owner access" on public.email_suggestions
   for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 drop policy if exists "google tokens owner access" on public.google_tokens;
-create policy "google tokens owner access" on public.google_tokens
-  for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 
 drop policy if exists "academic courses owner access" on public.academic_courses;
 create policy "academic courses owner access" on public.academic_courses
@@ -267,7 +272,7 @@ revoke all on table public.profiles, public.todos, public.habits,
 
 grant select, insert, update, delete on table public.profiles, public.todos,
   public.habits, public.habit_completions, public.journal_entries, public.plans,
-  public.email_suggestions, public.google_tokens, public.academic_courses,
+  public.email_suggestions, public.academic_courses,
   public.academic_assignments, public.academic_resources to authenticated;
 grant select on table public.academic_sync_runs to authenticated;
 

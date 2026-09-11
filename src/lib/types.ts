@@ -46,6 +46,29 @@ export type SavedPlan = {
   customRecurrence?: string;
   seriesId?: string;
   excludedDates?: string[];
+  source?: "ass" | "google";
+  googleEventId?: string;
+  allDay?: boolean;
+};
+
+export type CalendarSyncState =
+  | "not_connected"
+  | "ready"
+  | "syncing"
+  | "synced"
+  | "auth_expired"
+  | "unreachable"
+  | "misconfigured"
+  | "error";
+
+export type CalendarSyncStatus = {
+  state: CalendarSyncState;
+  connected: boolean;
+  lastSuccessfulSyncAt: string | null;
+  lastAttemptAt: string | null;
+  error: string | null;
+  timeZone: string | null;
+  eventsImported?: number;
 };
 
 export type PlanBlock = {
