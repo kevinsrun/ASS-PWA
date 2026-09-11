@@ -300,15 +300,13 @@ Do not use leaked proprietary files or unauthorized code.`;
 
   return (
     <div className="min-h-screen">
-      <main className="mx-auto flex min-h-[calc(100dvh-6rem)] max-w-4xl flex-col px-4 py-8 sm:px-6">
+      <main className="chat-page mx-auto flex min-h-[calc(100dvh-6rem)] max-w-3xl flex-col px-4 py-8 sm:px-6">
         <header className="flex items-center justify-between gap-3">
           <div>
-            <h1 className="text-3xl font-bold text-emerald-950">AI Chat</h1>
-            <p className="mt-1 text-sm text-slate-600">
-              Chat first. Tools open only when you need them.
-            </p>
+            <h1 className="text-3xl font-semibold">ASS</h1>
           </div>
-          <div className="flex gap-2">
+          <details className="chat-tools">
+            <summary>Tools</summary><div className="flex gap-2">
             <button
               onClick={() => setActiveTool(activeTool === "email" ? "none" : "email")}
               className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-emerald-100 bg-white px-3 text-sm text-emerald-700"
@@ -323,7 +321,8 @@ Do not use leaked proprietary files or unauthorized code.`;
               <Code2 size={16} />
               Code
             </button>
-          </div>
+            </div>
+          </details>
         </header>
 
         {activeTool !== "none" && (
@@ -409,19 +408,17 @@ Do not use leaked proprietary files or unauthorized code.`;
           </section>
         )}
 
-        <section className="ios-card mt-5 flex-1 space-y-3 overflow-y-auto rounded-3xl p-4">
+        <section className="chat-reading mt-5 flex-1 space-y-5 overflow-y-auto p-4">
           {messages.map((message, index) => (
             <div
               key={`${message.createdAt ?? "message"}-${index}`}
               className={
                 message.role === "user"
-                  ? "ml-auto max-w-[88%] whitespace-pre-wrap rounded-2xl bg-gray-900 px-4 py-3 text-white"
-                  : "mr-auto max-w-[88%] whitespace-pre-wrap rounded-2xl bg-emerald-50 px-4 py-3 text-gray-900"
+                  ? "ml-auto max-w-[82%] whitespace-pre-wrap rounded-2xl bg-gray-900 px-4 py-3 text-white"
+                  : "assistant-response mr-auto max-w-[94%] whitespace-pre-wrap"
               }
             >
-              {message.role === "assistant" && (
-                <Bot className="mb-2 inline text-emerald-600" size={16} />
-              )}
+              {message.role === "assistant" && <Bot className="mb-2 inline text-slate-400" size={16} />}
               <div>{message.content}</div>
             </div>
           ))}
@@ -432,7 +429,7 @@ Do not use leaked proprietary files or unauthorized code.`;
           )}
         </section>
 
-        <div className="ios-card mt-4 flex gap-2 rounded-3xl p-2">
+        <div className="chat-composer mt-4 flex gap-2 rounded-3xl p-2">
           <input
             value={input}
             onChange={(event) => setInput(event.target.value)}

@@ -10,7 +10,7 @@ export const metadata: Metadata = {
     default: "ASS",
     template: "%s | ASS",
   },
-  description: "A personal Life OS for scheduling, academics, habits, email, and AI-assisted planning.",
+  description: "A calm, intelligent place to decide what comes next.",
   applicationName: "ASS",
   manifest: "/manifest.json",
   appleWebApp: {
@@ -31,7 +31,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#5856d6",
+  themeColor: "#f7f7f8",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
@@ -45,7 +45,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="min-h-dvh overflow-x-hidden pb-[calc(5.75rem+env(safe-area-inset-bottom))]">
+      <body className="min-h-dvh overflow-x-hidden">
         <AuthProvider>
           <AppProvider>
             {children}

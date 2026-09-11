@@ -318,17 +318,14 @@ export default function JournalPage() {
 
   return (
     <div className="min-h-screen">
-      <main className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
-        <h1 className="text-3xl font-bold text-emerald-950">Journal</h1>
-        <p className="mt-2 text-gray-600">
-          Write thoughts, then turn them into tasks, habits, and calendar plans.
-        </p>
+      <main className="journal-page mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
+        <h1>Journal</h1>
 
         <textarea
           value={entry}
           onChange={(event) => setEntry(event.target.value)}
-          placeholder="Write today's thoughts..."
-          className="ios-card mt-6 min-h-60 w-full rounded-3xl p-4 outline-none focus:border-emerald-400"
+          placeholder="Start writing…"
+          className="journal-sheet mt-6 min-h-[52vh] w-full p-1 outline-none"
         />
 
         <div className="ios-card mt-3 rounded-3xl p-4">

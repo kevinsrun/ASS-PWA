@@ -66,10 +66,14 @@ export default function TodosPage() {
   return (
     <div className="min-h-screen">
       <main className="mx-auto max-w-3xl px-6 py-10">
-        <h1 className="text-3xl font-bold text-emerald-950">To-Dos</h1>
-        <p className="mt-2 text-gray-600">Track tasks across the whole app.</p>
+        <div className="project-page-heading">
+          <div><p className="ass-kicker">Projects</p><h1>Tasks</h1></div>
+          <nav aria-label="More project areas">
+            <a href="/academics">Academics</a><a href="/habits">Habits</a><a href="/journal">Journal</a>
+          </nav>
+        </div>
 
-        <div className="ios-card mt-6 flex flex-wrap gap-2 rounded-3xl p-4">
+        <div className="task-capture mt-6 flex flex-wrap gap-2">
           <input
             value={newTodo}
             onChange={(e) => setNewTodo(e.target.value)}
