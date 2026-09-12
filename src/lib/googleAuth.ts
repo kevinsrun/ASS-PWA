@@ -20,7 +20,7 @@ type OAuthState = { userId: string; expiresAt: number; nonce: string };
 
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/calendar",
 ];
 
 function requireEnv(name: string) {
@@ -100,7 +100,7 @@ export function getGoogleAuthUrl(userId: string) {
     redirect_uri: requireEnv("GOOGLE_REDIRECT_URI"),
     response_type: "code",
     access_type: "offline",
-    prompt: "consent",
+    prompt: "consent select_account",
     include_granted_scopes: "true",
     scope: GOOGLE_SCOPES.join(" "),
     state: createGoogleOAuthState(userId),

@@ -85,6 +85,11 @@ create table if not exists public.plans (
   series_id text,
   excluded_dates jsonb default '[]'::jsonb,
   google_event_id text,
+  google_calendar_id text,
+  google_recurring_event_id text,
+  google_color text,
+  google_etag text,
+  google_updated_at timestamptz,
   source text not null default 'ass' check (source in ('ass', 'google')),
   all_day boolean not null default false,
   updated_at timestamptz default now(),
@@ -118,7 +123,27 @@ create table if not exists public.google_tokens (
   last_sync_attempt_at timestamptz,
   last_successful_sync_at timestamptz,
   calendar_time_zone text not null default 'UTC',
+  connected_email text,
+  calendar_list_sync_token text,
   updated_at timestamptz default now()
+);
+
+create table if not exists public.google_calendars (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  calendar_id text not null,
+  summary text not null,
+  description text,
+  time_zone text,
+  background_color text,
+  foreground_color text,
+  access_role text not null default 'reader',
+  is_primary boolean not null default false,
+  is_selected boolean not null default true,
+  is_hidden boolean not null default false,
+  sync_token text,
+  last_synced_at timestamptz,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, calendar_id)
 );
 
 create table if not exists public.cron_runs (
@@ -222,6 +247,7 @@ alter table public.journal_entries enable row level security;
 alter table public.plans enable row level security;
 alter table public.email_suggestions enable row level security;
 alter table public.google_tokens enable row level security;
+alter table public.google_calendars enable row level security;
 alter table public.cron_runs enable row level security;
 alter table public.academic_courses enable row level security;
 alter table public.academic_assignments enable row level security;
@@ -267,6 +293,7 @@ create policy "academic sync runs owner read" on public.academic_sync_runs
 revoke all on table public.profiles, public.todos, public.habits,
   public.habit_completions, public.journal_entries, public.plans,
   public.email_suggestions, public.google_tokens, public.cron_runs,
+  public.google_calendars,
   public.academic_courses, public.academic_assignments,
   public.academic_resources, public.academic_sync_runs from anon;
 
@@ -284,3 +311,8 @@ grant usage, select on sequence public.todos_id_seq, public.habits_id_seq,
 -- Cron jobs should use SUPABASE_SECRET_KEY (or the legacy service-role key),
 -- which bypasses RLS. Keep either value server-only.
 -- No public policy is defined for cron_runs.
+
+create unique index if not exists plans_google_event_unique_idx
+  on public.plans(user_id, google_calendar_id, google_event_id);
+create index if not exists google_calendars_sync_idx
+  on public.google_calendars(user_id, is_selected, last_synced_at);

@@ -47,11 +47,11 @@ export default function TaskCard({
 
   if (editing) {
     return (
-      <div className="rounded-xl border bg-white p-4">
+      <div className="editor-card">
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          className="mb-2 w-full rounded-xl border px-3 py-2"
+          className="ass-input mb-2 w-full"
           placeholder="Task title"
         />
 
@@ -61,7 +61,7 @@ export default function TaskCard({
             onChange={(e) =>
               setPriority(e.target.value as "low" | "medium" | "high")
             }
-            className="rounded-xl border px-3 py-2"
+            className="ass-select"
           >
             <option value="low">Low</option>
             <option value="medium">Medium</option>
@@ -72,20 +72,20 @@ export default function TaskCard({
             type="number"
             value={duration}
             onChange={(e) => setDuration(Number(e.target.value))}
-            className="w-24 rounded-xl border px-3 py-2"
+            className="ass-input w-24"
           />
 
           <input
             type="date"
             value={dueDate}
             onChange={(e) => setDueDate(e.target.value)}
-            className="rounded-xl border px-3 py-2"
+            className="ass-input"
           />
 
           <select
             value={recurrence}
             onChange={(e) => setRecurrence(e.target.value as PlanRecurrence)}
-            className="rounded-xl border px-3 py-2"
+            className="ass-select"
           >
             <option value="none">Once</option>
             <option value="daily">Daily</option>
@@ -99,11 +99,11 @@ export default function TaskCard({
         <input
           value={tags}
           onChange={(e) => setTags(e.target.value)}
-          className="mb-2 w-full rounded-xl border px-3 py-2"
+          className="ass-input mb-2 w-full"
           placeholder="Tags, comma separated"
         />
 
-        <div className="mb-3 rounded-xl border p-3">
+        <div className="editor-subgroup">
           <div className="mb-2 text-sm font-medium">Subtasks</div>
           <div className="space-y-2">
             {subtasks.map((subtask) => (
@@ -129,7 +129,7 @@ export default function TaskCard({
             <input
               value={newSubtask}
               onChange={(event) => setNewSubtask(event.target.value)}
-              className="flex-1 rounded-lg border px-3 py-2 text-sm"
+              className="ass-input flex-1"
               placeholder="Add subtask"
             />
             <button
@@ -142,7 +142,7 @@ export default function TaskCard({
                 ]);
                 setNewSubtask("");
               }}
-              className="rounded-lg border px-3 py-2 text-sm"
+              className="ass-secondary-button"
             >
               Add
             </button>
@@ -152,14 +152,14 @@ export default function TaskCard({
         <div className="flex gap-2">
           <button
             onClick={saveEdit}
-            className="rounded-lg bg-gray-900 px-3 py-2 text-white"
+            className="ass-primary-button"
           >
             Save
           </button>
 
           <button
             onClick={() => setEditing(false)}
-            className="rounded-lg border px-3 py-2"
+            className="ass-secondary-button"
           >
             Cancel
           </button>
@@ -169,71 +169,35 @@ export default function TaskCard({
   }
 
   return (
-    <div className="flex flex-col gap-3 rounded-2xl border border-emerald-100 bg-white/90 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-      <div>
+    <div className="reminder-row">
+      <button
+        type="button"
+        className={`reminder-check ${todo.done ? "is-done" : ""}`}
+        onClick={() => onToggle(todo.id)}
+        aria-label={todo.done ? `Mark ${todo.title} incomplete` : `Complete ${todo.title}`}
+      />
+      <div className="reminder-copy">
         <div className={todo.done ? "line-through text-gray-400" : ""}>
           {todo.title}
         </div>
-
-        <div className="text-sm text-gray-500 capitalize">
-          Priority: {todo.priority}
-        </div>
-
-        <div className="text-sm text-gray-500">
-          Duration: {todo.duration} min
-        </div>
-
-        {todo.recurrence && todo.recurrence !== "none" && (
-          <div className="text-sm text-gray-500 capitalize">
-            Repeats: {todo.recurrence}
-          </div>
-        )}
-
-        {todo.dueDate && (
-          <div className="text-sm text-gray-500">
-            Due: {todo.dueDate}
-          </div>
-        )}
-
-        {(todo.tags ?? []).length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {todo.tags?.map((tag) => (
-              <span
-                key={tag}
-                className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {(todo.subtasks ?? []).length > 0 && (
-          <div className="mt-2 text-xs text-gray-500">
-            {todo.subtasks?.filter((subtask) => subtask.done).length}/
-            {todo.subtasks?.length} subtasks
-          </div>
-        )}
+        <span>
+          {[todo.dueDate, `${todo.duration} min`, todo.recurrence !== "none" ? todo.recurrence : null]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="row-actions">
         <button
           onClick={() => setEditing(true)}
-          className="rounded-lg border px-3 py-1"
+          className="quiet-action"
         >
           Edit
         </button>
 
         <button
-          onClick={() => onToggle(todo.id)}
-          className="rounded-lg border px-3 py-1"
-        >
-          {todo.done ? "Undo" : "Done"}
-        </button>
-
-        <button
           onClick={() => onDelete(todo.id)}
-          className="rounded-lg border px-3 py-1 text-red-600"
+          className="quiet-action is-destructive"
         >
           Delete
         </button>

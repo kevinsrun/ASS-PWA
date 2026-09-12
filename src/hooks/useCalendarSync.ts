@@ -11,6 +11,8 @@ const initialStatus: CalendarSyncStatus = {
   lastAttemptAt: null,
   error: null,
   timeZone: null,
+  connectedEmail: null,
+  calendars: [],
 };
 
 export function useCalendarSync(onSynced?: () => Promise<void> | void) {
@@ -54,7 +56,20 @@ export function useCalendarSync(onSynced?: () => Promise<void> | void) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      await request("GET");
+      const current = await request("GET");
+      const lastSync = current.lastSuccessfulSyncAt
+        ? new Date(current.lastSuccessfulSyncAt).getTime()
+        : 0;
+      const stale = Date.now() - lastSync > 15 * 60 * 1000;
+      if (
+        current.connected &&
+        current.state !== "auth_expired" &&
+        current.state !== "misconfigured" &&
+        stale
+      ) {
+        const synced = await request("POST");
+        if (synced.state === "synced") await onSynced?.();
+      }
     } catch (error) {
       setStatus({
         ...initialStatus,
@@ -64,11 +79,24 @@ export function useCalendarSync(onSynced?: () => Promise<void> | void) {
     } finally {
       setLoading(false);
     }
-  }, [request]);
+  }, [onSynced, request]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!session?.access_token) return;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    const interval = window.setInterval(refreshWhenVisible, 5 * 60 * 1000);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [refresh, session?.access_token]);
 
   const syncNow = useCallback(async () => {
     setLoading(true);

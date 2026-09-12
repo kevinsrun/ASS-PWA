@@ -33,17 +33,17 @@ export default function HabitCard({
 
   if (editing) {
     return (
-      <div className="rounded-xl border bg-white p-4">
+      <div className="editor-card">
         <input
           value={name}
           onChange={(event) => setName(event.target.value)}
-          className="w-full rounded-xl border px-3 py-2"
+          className="ass-input w-full"
         />
         <div className="mt-2 grid gap-2 sm:grid-cols-3">
           <select
             value={category}
             onChange={(event) => setCategory(event.target.value as PlanCategory)}
-            className="rounded-xl border px-3 py-2"
+            className="ass-select"
           >
             <option value="personal">Personal</option>
             <option value="fitness">Fitness</option>
@@ -60,7 +60,7 @@ export default function HabitCard({
                 event.target.value as NonNullable<Habit["frequency"]>
               )
             }
-            className="rounded-xl border px-3 py-2"
+            className="ass-select"
           >
             <option value="daily">Daily</option>
             <option value="weekdays">Weekdays</option>
@@ -74,7 +74,7 @@ export default function HabitCard({
                 event.target.value as NonNullable<Habit["timePreference"]>
               )
             }
-            className="rounded-xl border px-3 py-2"
+            className="ass-select"
           >
             <option value="anytime">Anytime</option>
             <option value="morning">Morning</option>
@@ -86,7 +86,7 @@ export default function HabitCard({
           value={notes}
           onChange={(event) => setNotes(event.target.value)}
           placeholder="Notes"
-          className="mt-2 min-h-20 w-full rounded-xl border px-3 py-2"
+          className="ass-input mt-2 min-h-20 w-full"
         />
         <div className="mt-3 flex gap-2">
           <button
@@ -100,13 +100,13 @@ export default function HabitCard({
               });
               setEditing(false);
             }}
-            className="rounded-lg bg-gray-900 px-3 py-2 text-white"
+            className="ass-primary-button"
           >
             Save
           </button>
           <button
             onClick={() => setEditing(false)}
-            className="rounded-lg border px-3 py-2"
+            className="ass-secondary-button"
           >
             Cancel
           </button>
@@ -116,51 +116,33 @@ export default function HabitCard({
   }
 
   return (
-    <div className="flex flex-col gap-3 rounded-2xl border border-emerald-100 bg-white/90 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-      <div>
+    <div className="reminder-row">
+      <button
+        type="button"
+        className={`reminder-check ${completedToday ? "is-done" : ""}`}
+        onClick={() => onToggle(habit.id)}
+        aria-label={completedToday ? `${habit.name} completed today` : `Complete ${habit.name}`}
+      />
+      <div className="reminder-copy">
         <div className="font-medium">{habit.name}</div>
-        <div className="text-sm text-gray-500">
+        <span>
           {habit.category ?? "personal"} · {habit.frequency ?? "daily"} ·{" "}
           {habit.timePreference ?? "anytime"}
-        </div>
-        <div className="text-sm text-gray-500">Streak: {habit.streak}</div>
-        <div className="text-sm text-gray-500">
-          {completedToday ? "Completed today" : "Not completed today"}
-        </div>
-        {habit.notes && (
-          <div className="mt-1 text-sm text-gray-500">{habit.notes}</div>
-        )}
-        {(habit.completionHistory ?? []).length > 0 && (
-          <div className="mt-2 flex gap-1">
-            {(habit.completionHistory ?? []).slice(-14).map((date) => (
-              <span
-                key={date}
-                title={date}
-                className="h-2 w-2 rounded-full bg-emerald-500"
-              />
-            ))}
-          </div>
-        )}
+          {habit.streak > 0 ? ` · ${habit.streak} day streak` : ""}
+        </span>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="row-actions">
         <button
           onClick={() => setEditing(true)}
-          className="rounded-lg border px-3 py-1"
+          className="quiet-action"
         >
           Edit
         </button>
 
         <button
-          onClick={() => onToggle(habit.id)}
-          className="rounded-lg border px-3 py-1"
-        >
-          {completedToday ? "Done Today" : "Check in"}
-        </button>
-
-        <button
           onClick={() => onDelete(habit.id)}
-          className="rounded-lg border px-3 py-1 text-red-600"
+          className="quiet-action is-destructive"
         >
           Delete
         </button>

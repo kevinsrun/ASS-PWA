@@ -32,24 +32,27 @@ export default function HabitsPage() {
 
   return (
     <div className="min-h-screen">
-      <main className="mx-auto max-w-3xl px-6 py-10">
-        <h1 className="text-3xl font-bold text-emerald-950">Habits</h1>
-        <p className="mt-2 text-gray-600">
+      <main className="simple-page">
+        <header className="simple-header">
+        <span>Projects</span>
+        <h1>Habits</h1>
+        <p>
           {completedTodayCount}/{habits.length} completed today
         </p>
+        </header>
 
-        <div className="ios-card mt-6 flex flex-wrap gap-2 rounded-3xl p-4">
+        <div className="capture-bar">
           <input
             value={newHabit}
             onChange={(e) => setNewHabit(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Add a habit..."
-            className="min-h-12 flex-1 rounded-xl border bg-white px-4 py-3"
+            className="ass-input flex-1"
           />
           <select
             value={category}
             onChange={(event) => setCategory(event.target.value)}
-            className="min-h-12 rounded-xl border bg-white px-4 py-3"
+            className="ass-select"
           >
             <option value="personal">Personal</option>
             <option value="fitness">Fitness</option>
@@ -60,7 +63,7 @@ export default function HabitsPage() {
           <select
             value={frequency}
             onChange={(event) => setFrequency(event.target.value)}
-            className="min-h-12 rounded-xl border bg-white px-4 py-3"
+            className="ass-select"
           >
             <option value="daily">Daily</option>
             <option value="weekdays">Weekdays</option>
@@ -69,13 +72,13 @@ export default function HabitsPage() {
           </select>
           <button
             onClick={handleAddHabit}
-            className="min-h-12 rounded-xl bg-emerald-600 px-4 py-3 text-white"
+            className="ass-primary-button"
           >
             Add
           </button>
         </div>
 
-        <div className="mt-6 space-y-3">
+        <div className="simple-list">
           {habits.map((habit) => (
             <HabitCard
               key={habit.id}
@@ -87,7 +90,7 @@ export default function HabitsPage() {
           ))}
 
           {habits.length === 0 && (
-            <div className="rounded-xl border bg-white p-4 text-gray-500">
+            <div className="quiet-empty">
               No habits yet.
             </div>
           )}

@@ -1,6 +1,14 @@
 "use client";
 
-import { DragEvent, useMemo, useState } from "react";
+import {
+  DragEvent,
+  UIEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   AlertTriangle,
   CalendarDays,
@@ -48,10 +56,10 @@ type OptimizerSuggestion = {
   notes: string;
 };
 
-const DAY_START = 5 * 60;
-const DAY_END = 23 * 60;
+const DAY_START = 0;
+const DAY_END = 24 * 60;
 const DAY_MINUTES = DAY_END - DAY_START;
-const PX_PER_MINUTE = 1.2;
+const PX_PER_MINUTE = 1.05;
 const MIN_EVENT_HEIGHT = 30;
 const UNSCHEDULED_TARGET = 0.2;
 
@@ -136,6 +144,7 @@ function getWeekStart(dateKey: string) {
 }
 
 function formatHour(hour: number) {
+  if (hour === 24) return "12 AM";
   if (hour === 0) return "12 AM";
   if (hour < 12) return `${hour} AM`;
   if (hour === 12) return "12 PM";
@@ -314,6 +323,7 @@ export default function CalendarPage() {
     updatePlan,
     toggleHabit,
     reloadCloud,
+    calendarActionError,
   } = useAppContext();
   const { session } = useAuth();
   const calendarSync = useCalendarSync(reloadCloud);
@@ -340,7 +350,12 @@ export default function CalendarPage() {
   const [activePanel, setActivePanel] = useState<
     "none" | "build" | "habits" | "insights" | "email"
   >("none");
-  const [calendarView, setCalendarView] = useState<"week" | "day">("week");
+  const [calendarView, setCalendarView] = useState<"month" | "week" | "day">("week");
+  const [monthPopoverDate, setMonthPopoverDate] = useState<string | null>(null);
+  const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const touchStartX = useRef<number | null>(null);
+  const didInitialScroll = useRef(false);
+  const [visibleHourRange, setVisibleHourRange] = useState({ start: 0, end: 12 });
 
   const today = getTodayString();
   const weekStart = getWeekStart(selectedDate);
@@ -372,6 +387,10 @@ export default function CalendarPage() {
       currentMonth: day.getMonth() === monthStart.getMonth(),
     };
   });
+  const monthDays = miniCalendarDays.map((day) => ({
+    ...day,
+    plans: getVisiblePlans(plans, day.key),
+  }));
   const hours = Array.from(
     { length: (DAY_END - DAY_START) / 60 + 1 },
     (_, index) => DAY_START / 60 + index
@@ -440,12 +459,74 @@ export default function CalendarPage() {
     currentMinute >= DAY_START &&
     currentMinute <= DAY_END;
 
-  function previousWeek() {
-    setSelectedDate(formatDateKey(addDays(weekStart, -7)));
+  const scrollToCurrentTime = useCallback((smooth = true) => {
+    const container = timelineScrollRef.current;
+    if (!container) return;
+    const target = Math.max(0, currentMinute * PX_PER_MINUTE - container.clientHeight * 0.32);
+    container.scrollTo({ top: target, behavior: smooth ? "smooth" : "auto" });
+  }, [currentMinute]);
+
+  useEffect(() => {
+    if (calendarView === "month" || didInitialScroll.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      scrollToCurrentTime(false);
+      didInitialScroll.current = true;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [calendarView, scrollToCurrentTime]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+      if (event.key.toLowerCase() === "t") {
+        setSelectedDate(today);
+        window.requestAnimationFrame(() => scrollToCurrentTime());
+      } else if (event.key.toLowerCase() === "m") {
+        setCalendarView("month");
+      } else if (event.key.toLowerCase() === "w") {
+        setCalendarView("week");
+      } else if (event.key.toLowerCase() === "d") {
+        setCalendarView("day");
+      } else if (event.key.toLowerCase() === "n") {
+        setActivePanel("build");
+      } else if (event.key === "ArrowLeft") {
+        previousRange();
+      } else if (event.key === "ArrowRight") {
+        nextRange();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  });
+
+  function handleTimelineScroll(event: UIEvent<HTMLDivElement>) {
+    const target = event.currentTarget;
+    const start = Math.max(0, Math.floor(target.scrollTop / (60 * PX_PER_MINUTE)) - 2);
+    const end = Math.min(24, Math.ceil((target.scrollTop + target.clientHeight) / (60 * PX_PER_MINUTE)) + 2);
+    if (start !== visibleHourRange.start || end !== visibleHourRange.end) {
+      setVisibleHourRange({ start, end });
+    }
   }
 
-  function nextWeek() {
-    setSelectedDate(formatDateKey(addDays(weekStart, 7)));
+  function moveRange(direction: -1 | 1) {
+    const selected = new Date(`${selectedDate}T00:00:00`);
+    if (calendarView === "month") {
+      selected.setMonth(selected.getMonth() + direction);
+      setSelectedDate(formatDateKey(selected));
+      return;
+    }
+    setSelectedDate(
+      formatDateKey(addDays(selected, direction * (calendarView === "day" ? 1 : 7)))
+    );
+  }
+
+  function previousRange() {
+    moveRange(-1);
+  }
+
+  function nextRange() {
+    moveRange(1);
   }
 
   function addManualPlan() {
@@ -492,12 +573,29 @@ export default function CalendarPage() {
     setNotes("");
   }
 
-  function movePlan(planId: number, newDate: string) {
+  function movePlan(planId: number, newDate: string, start?: number) {
     const plan = plans.find((candidate) => candidate.id === planId);
     if (!plan) return;
-
-    updatePlan(planId, { date: newDate });
+    const duration = Math.max(15, planRange(plan).end - planRange(plan).start);
+    updatePlan(planId, {
+      date: newDate,
+      ...(typeof start === "number"
+        ? {
+            startLabel: formatTimeLabel(minutesToClock(start)),
+            endLabel: formatTimeLabel(minutesToClock(Math.min(DAY_END, start + duration))),
+          }
+        : {}),
+    });
     setSelectedDate(newDate);
+  }
+
+  function dropPlan(event: DragEvent<HTMLDivElement>, newDate: string) {
+    event.preventDefault();
+    const id = Number(event.dataTransfer.getData("text/plain"));
+    if (!id) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const raw = Math.max(0, Math.min(DAY_END - 15, (event.clientY - bounds.top) / PX_PER_MINUTE));
+    movePlan(id, newDate, Math.round(raw / 15) * 15);
   }
 
   function editOccurrence(plan: SavedPlan, newDate: string) {
@@ -679,20 +777,23 @@ export default function CalendarPage() {
 
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={previousWeek}
+              onClick={previousRange}
               className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
             >
               <ChevronLeft size={16} />
               Prev
             </button>
             <button
-              onClick={() => setSelectedDate(today)}
+              onClick={() => {
+                setSelectedDate(today);
+                window.requestAnimationFrame(() => scrollToCurrentTime());
+              }}
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
             >
               Today
             </button>
             <button
-              onClick={nextWeek}
+              onClick={nextRange}
               className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
             >
               Next
@@ -737,8 +838,8 @@ export default function CalendarPage() {
                   </button>
                 ))}
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-1 border-t border-emerald-100 pt-2">
-                {(["week", "day"] as const).map((mode) => (
+              <div className="mt-2 grid grid-cols-3 gap-1 border-t border-emerald-100 pt-2">
+                {(["month", "week", "day"] as const).map((mode) => (
                   <button
                     key={mode}
                     onClick={() => setCalendarView(mode)}
@@ -748,11 +849,18 @@ export default function CalendarPage() {
                         : "text-slate-600 hover:bg-blue-50"
                     }`}
                   >
-                    {mode} zoom
+                    {mode}
                   </button>
                 ))}
               </div>
             </div>
+
+            {calendarActionError ? (
+              <div className="ass-inline-error" role="alert">
+                <AlertTriangle size={17} aria-hidden="true" />
+                <span>{calendarActionError}</span>
+              </div>
+            ) : null}
 
             <section
               className={`rounded-lg border border-emerald-100 bg-gradient-to-br from-emerald-50 to-blue-50 p-4 text-emerald-950 shadow-sm ${
@@ -1033,7 +1141,130 @@ export default function CalendarPage() {
             </section>
           </div>
 
-          <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          {calendarView === "month" ? (
+            <section
+              className="month-calendar"
+              onTouchStart={(event) => {
+                touchStartX.current = event.touches[0]?.clientX ?? null;
+              }}
+              onTouchEnd={(event) => {
+                if (touchStartX.current === null) return;
+                const distance = event.changedTouches[0]?.clientX - touchStartX.current;
+                if (Math.abs(distance) > 55) moveRange(distance > 0 ? -1 : 1);
+                touchStartX.current = null;
+              }}
+            >
+              <div className="month-calendar__header">
+                <div>
+                  <span className="ass-kicker">Month</span>
+                  <h2>
+                    {monthStart.toLocaleDateString("en-US", {
+                      month: "long",
+                      year: "numeric",
+                    })}
+                  </h2>
+                </div>
+                <span>Swipe or use ← →</span>
+              </div>
+              <div className="month-calendar__weekdays" aria-hidden="true">
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+                  <span key={day}>{day}</span>
+                ))}
+              </div>
+              <div className="month-calendar__grid">
+                {monthDays.map((day) => {
+                  const visible = day.plans.slice(0, 3);
+                  const hiddenCount = Math.max(0, day.plans.length - visible.length);
+                  return (
+                    <div
+                      key={day.key}
+                      className={`month-day ${day.currentMonth ? "" : "is-outside"} ${
+                        day.key === today ? "is-today" : ""
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        className="month-day__number"
+                        onClick={() => {
+                          setSelectedDate(day.key);
+                          setDate(day.key);
+                          setCalendarView("day");
+                        }}
+                        aria-label={`Open ${dateLabel(day.key)}`}
+                      >
+                        {day.number}
+                      </button>
+                      <div className="month-day__events">
+                        {visible.map((plan) => (
+                          <button
+                            key={`${day.key}-${plan.id}`}
+                            type="button"
+                            title={`${plan.title}, ${plan.startLabel}`}
+                            onClick={() => {
+                              setSelectedDate(day.key);
+                              setDate(day.key);
+                              setCalendarView("day");
+                            }}
+                            className="month-event"
+                            style={{
+                              borderColor: plan.googleColor || "var(--blue)",
+                            }}
+                          >
+                            <span>{plan.allDay ? "" : plan.startLabel}</span>
+                            <strong>{plan.title}</strong>
+                          </button>
+                        ))}
+                        {hiddenCount > 0 ? (
+                          <button
+                            type="button"
+                            className="month-day__more"
+                            onClick={() =>
+                              setMonthPopoverDate(
+                                monthPopoverDate === day.key ? null : day.key
+                              )
+                            }
+                          >
+                            +{hiddenCount} more
+                          </button>
+                        ) : null}
+                      </div>
+                      {monthPopoverDate === day.key ? (
+                        <div className="month-popover">
+                          <strong>{dateLabel(day.key)}</strong>
+                          {day.plans.map((plan) => (
+                            <button
+                              key={`popover-${plan.id}`}
+                              type="button"
+                              onClick={() => {
+                                setSelectedDate(day.key);
+                                setDate(day.key);
+                                setCalendarView("day");
+                              }}
+                            >
+                              <i style={{ background: plan.googleColor || "var(--blue)" }} />
+                              <span>{plan.title}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ) : (
+          <section
+            className="calendar-surface overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"
+            onTouchStart={(event) => {
+              touchStartX.current = event.touches[0]?.clientX ?? null;
+            }}
+            onTouchEnd={(event) => {
+              if (touchStartX.current === null) return;
+              const distance = event.changedTouches[0]?.clientX - touchStartX.current;
+              if (Math.abs(distance) > 70) moveRange(distance > 0 ? -1 : 1);
+              touchStartX.current = null;
+            }}
+          >
             <div className="border-b border-slate-200 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -1054,7 +1285,7 @@ export default function CalendarPage() {
               </div>
             </div>
 
-            <div className="border-b border-emerald-100 bg-emerald-50/60 p-3 md:hidden">
+            <div className="hidden">
               <div className="flex gap-2 overflow-x-auto pb-1">
                 {weekDays.map((day) => {
                   const holiday = weekHolidays.find((item) => item.date === day.key);
@@ -1085,7 +1316,7 @@ export default function CalendarPage() {
               </div>
             </div>
 
-            <div className="md:hidden">
+            <div className="hidden">
               <div className="p-4">
                 <div className="ios-card rounded-3xl p-4">
                   <div className="flex items-center justify-between gap-3">
@@ -1243,8 +1474,8 @@ export default function CalendarPage() {
               </div>
             )}
 
-            <div className="hidden md:grid md:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)]">
-              <aside className="border-r border-slate-200 bg-slate-50/80 p-4">
+            <div className="grid grid-cols-1 md:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)]">
+              <aside className="hidden border-r border-slate-200 bg-slate-50/80 p-4 md:block">
                 <button
                   onClick={() => setActivePanel(activePanel === "build" ? "none" : "build")}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-slate-800 shadow-sm ring-1 ring-slate-200 hover:bg-slate-50"
@@ -1294,13 +1525,17 @@ export default function CalendarPage() {
 
               </aside>
 
-              <div className="overflow-x-auto">
+              <div
+                ref={timelineScrollRef}
+                onScroll={handleTimelineScroll}
+                className="calendar-timeline-scroll overflow-auto"
+              >
                 <div className="min-w-[980px]">
                 <div
                   className="sticky top-0 z-20 grid border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur"
                   style={{ gridTemplateColumns: desktopGridColumns }}
                 >
-                  <div className="border-r border-slate-200 bg-slate-50 px-3 py-3 text-xs font-medium text-slate-500">
+                  <div className="sticky left-0 z-30 border-r border-slate-200 bg-slate-50 px-3 py-3 text-xs font-medium text-slate-500">
                     Local time
                   </div>
                   {calendarDays.map((day) => {
@@ -1394,8 +1629,14 @@ export default function CalendarPage() {
                     gridTemplateColumns: desktopGridColumns,
                   }}
                 >
-                  <div className="relative border-r border-slate-200 bg-slate-50">
-                    {hours.map((hour) => (
+                  <div className="sticky left-0 z-20 border-r border-slate-200 bg-slate-50">
+                    {hours
+                      .filter(
+                        (hour) =>
+                          hour >= visibleHourRange.start &&
+                          hour <= visibleHourRange.end
+                      )
+                      .map((hour) => (
                       <div
                         key={hour}
                         className="absolute right-3 text-xs font-medium text-slate-500"
@@ -1412,7 +1653,6 @@ export default function CalendarPage() {
                     const dayPlans = getVisiblePlans(plans, day.key).filter(
                       (plan) => !plan.allDay
                     );
-                    const dayOpenGaps = getOpenGaps(dayPlans, 45);
                     const conflicts = getConflicts(plans, day.key);
                     const conflictIds = new Set(
                       conflicts.flatMap((conflict) => [conflict.a.id, conflict.b.id])
@@ -1422,10 +1662,9 @@ export default function CalendarPage() {
                       <div
                         key={day.key}
                         onDragOver={(event) => event.preventDefault()}
-                        onDrop={(event: DragEvent<HTMLDivElement>) => {
-                          const id = Number(event.dataTransfer.getData("text/plain"));
-                          if (id) movePlan(id, day.key);
-                        }}
+                        onDrop={(event: DragEvent<HTMLDivElement>) =>
+                          dropPlan(event, day.key)
+                        }
                         className="relative border-l border-slate-200"
                         style={{
                           minHeight: `${timelineHeight}px`,
@@ -1444,28 +1683,6 @@ export default function CalendarPage() {
                             <span className="absolute -left-1 -top-[5px] h-2.5 w-2.5 rounded-full bg-rose-500" />
                           </div>
                         )}
-                        {dayOpenGaps.map((gap) => (
-                          <button
-                            key={`${day.key}-${gap.start}-${gap.end}-desktop-gap`}
-                            onClick={() => {
-                              setActivePanel("build");
-                              setDate(day.key);
-                              setSelectedDate(day.key);
-                              setStartTime(minutesToClock(gap.start));
-                              setEndTime(minutesToClock(Math.min(gap.end, gap.start + 60)));
-                            }}
-                            className={`absolute z-[1] rounded-lg border border-dashed border-emerald-200 bg-emerald-50/50 px-2 py-1 text-left text-[11px] font-medium text-emerald-700 hover:bg-emerald-100/80 ${
-                              calendarView === "day" ? "left-3 right-3" : "left-2 right-2"
-                            }`}
-                            style={{
-                              top: `${Math.max(0, (gap.start - DAY_START) * PX_PER_MINUTE)}px`,
-                              height: `${Math.max(22, (gap.end - gap.start) * PX_PER_MINUTE)}px`,
-                            }}
-                          >
-                            Open gap: {formatTimeLabel(minutesToClock(gap.start))} -{" "}
-                            {formatTimeLabel(minutesToClock(gap.end))}
-                          </button>
-                        ))}
                         {dayPlans.map((plan, index) => {
                           const categoryMeta = CATEGORIES[plan.category ?? "other"];
                           const hasConflict = conflictIds.has(plan.id);
@@ -1477,12 +1694,18 @@ export default function CalendarPage() {
                               onDragStart={(event) =>
                                 event.dataTransfer.setData("text/plain", String(plan.id))
                               }
-                              className={`absolute z-10 overflow-hidden rounded-lg border-l-4 px-2 py-2 shadow-sm ${categoryMeta.block} ${
+                              className={`calendar-event absolute z-10 overflow-hidden rounded-lg border-l-4 px-2 py-2 shadow-sm ${categoryMeta.block} ${
                                 hasConflict ? "ring-2 ring-amber-300" : ""
                               }`}
                               style={{
                                 ...eventStyle(plan, hasConflict ? 1 : 0),
                                 left: `${8 + (hasConflict ? index % 2 : 0) * 14}px`,
+                                ...(plan.googleColor
+                                  ? {
+                                      borderColor: plan.googleColor,
+                                      backgroundColor: `color-mix(in srgb, ${plan.googleColor} 13%, var(--surface-solid))`,
+                                    }
+                                  : {}),
                               }}
                             >
                               <div className="flex items-start justify-between gap-2">
@@ -1543,6 +1766,7 @@ export default function CalendarPage() {
             </div>
             </div>
           </section>
+          )}
         </div>
       </main>
     </div>

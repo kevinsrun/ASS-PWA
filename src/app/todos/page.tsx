@@ -65,7 +65,7 @@ export default function TodosPage() {
 
   return (
     <div className="min-h-screen">
-      <main className="mx-auto max-w-3xl px-6 py-10">
+      <main className="simple-page">
         <div className="project-page-heading">
           <div><p className="ass-kicker">Projects</p><h1>Tasks</h1></div>
           <nav aria-label="More project areas">
@@ -73,13 +73,13 @@ export default function TodosPage() {
           </nav>
         </div>
 
-        <div className="task-capture mt-6 flex flex-wrap gap-2">
+        <div className="capture-bar">
           <input
             value={newTodo}
             onChange={(e) => setNewTodo(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Add a task..."
-            className="min-h-12 flex-1 rounded-xl border bg-white px-4 py-3"
+            className="ass-input flex-1"
           />
 
           <select
@@ -87,7 +87,7 @@ export default function TodosPage() {
             onChange={(e) =>
               setPriority(e.target.value as "low" | "medium" | "high")
             }
-            className="min-h-12 rounded-xl border bg-white px-4 py-3"
+            className="ass-select"
           >
             <option value="low">Low</option>
             <option value="medium">Medium</option>
@@ -98,7 +98,7 @@ export default function TodosPage() {
             type="date"
             value={dueDate}
             onChange={(event) => setDueDate(event.target.value)}
-            className="min-h-12 rounded-xl border bg-white px-4 py-3"
+            className="ass-input"
           />
 
           <input
@@ -106,27 +106,27 @@ export default function TodosPage() {
             min={1}
             value={duration}
             onChange={(e) => setDuration(Number(e.target.value))}
-            className="min-h-12 w-28 rounded-xl border bg-white px-4 py-3"
+            className="ass-input w-28"
             aria-label="Duration in minutes"
           />
 
           <button
             onClick={handleAddTodo}
-            className="min-h-12 rounded-xl bg-emerald-600 px-4 py-3 text-white"
+            className="ass-primary-button"
           >
             Add
           </button>
         </div>
 
-        <div className="mt-6 space-y-6">
+        <div className="task-sections">
           {[
             ["Overdue", overdueTodos],
             ["Today", todayTodos],
             ["Later", laterTodos],
           ].map(([label, items]) => (
             <section key={label as string}>
-              <h2 className="text-lg font-semibold">{label as string}</h2>
-              <div className="mt-3 space-y-3">
+              <h2>{label as string}</h2>
+              <div className="simple-list">
                 {(items as typeof todos).map((todo) => (
                   <div key={todo.id}>
                     <TaskCard
@@ -137,7 +137,7 @@ export default function TodosPage() {
                     />
                     <button
                       onClick={() => convertToCalendar(todo.id)}
-                      className="mt-2 rounded-lg border px-3 py-1 text-sm text-indigo-700"
+                      className="quiet-action"
                     >
                       Convert to calendar event
                     </button>
@@ -148,7 +148,7 @@ export default function TodosPage() {
           ))}
 
           {todos.length === 0 && (
-            <div className="rounded-xl border bg-white p-4 text-gray-500">
+            <div className="quiet-empty">
               No to-dos yet.
             </div>
           )}

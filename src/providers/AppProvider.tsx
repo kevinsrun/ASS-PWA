@@ -5,7 +5,6 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useMemo,
   useState,
   Dispatch,
   ReactNode,
@@ -66,6 +65,7 @@ type AppContextType = {
   codingWorkflows: CodingWorkflow[];
   profile: ProfileSettings;
   syncStatus: string;
+  calendarActionError: string | null;
   reloadCloud: () => Promise<void>;
   addPlan: (plan: Omit<SavedPlan, "id">) => void;
   deletePlan: (id: number) => void;
@@ -82,7 +82,7 @@ type AppContextType = {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { session, user } = useAuth();
   const [todos, setTodos] = useState<Todo[]>([]);
   const [habits, setHabits] = useState<Habit[]>([]);
   const [journals, setJournals] = useState<JournalEntry[]>([]);
@@ -101,6 +101,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const [cloudReady, setCloudReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState("Local only");
+  const [calendarActionError, setCalendarActionError] = useState<string | null>(null);
 
   useEffect(() => {
     setTodos(loadTodos());
@@ -328,18 +329,60 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  async function syncCalendarChange(
+    method: "POST" | "PATCH" | "DELETE",
+    plan: SavedPlan
+  ) {
+    if (!session?.access_token || !profile.gmailConnected) return;
+    setCalendarActionError(null);
+    try {
+      const response = await fetch("/api/calendar/events", {
+        method,
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(
+          method === "DELETE"
+            ? {
+                googleCalendarId: plan.googleCalendarId,
+                googleEventId: plan.googleEventId,
+              }
+            : plan
+        ),
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(body.error ?? "Google Calendar could not be updated.");
+      }
+      await reloadCloud();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Google Calendar could not be updated.";
+      console.error("Google Calendar mutation failed:", message);
+      setCalendarActionError(message);
+    }
+  }
+
   function addPlan(plan: Omit<SavedPlan, "id">) {
+    const nextPlan = { id: Date.now(), ...plan };
     setPlans((prev) => [
       ...prev,
-      {
-        id: Date.now(),
-        ...plan,
-      },
+      nextPlan,
     ]);
+    if (plan.source !== "google") {
+      void syncCalendarChange("POST", nextPlan);
+    }
   }
 
   function deletePlan(id: number) {
+    const plan = plans.find((candidate) => candidate.id === id);
     setPlans((prev) => prev.filter((plan) => plan.id !== id));
+    if (plan?.source === "google" && plan.googleCalendarId && plan.googleEventId) {
+      void syncCalendarChange("DELETE", plan);
+    }
   }
 
   function addCodingWorkflow(workflow: Omit<CodingWorkflow, "id" | "createdAt">) {
@@ -387,9 +430,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   function updatePlan(id: number, updates: Partial<Omit<SavedPlan, "id">>) {
+    const plan = plans.find((candidate) => candidate.id === id);
     setPlans((prev) =>
       prev.map((plan) => (plan.id === id ? { ...plan, ...updates } : plan))
     );
+    if (plan?.source === "google" && plan.googleCalendarId && plan.googleEventId) {
+      void syncCalendarChange("PATCH", { ...plan, ...updates });
+    }
   }
 
   const reloadCloud = useCallback(async () => {
@@ -410,8 +457,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [user]);
 
-  const value = useMemo(
-    () => ({
+  const value = {
       todos,
       habits,
       journals,
@@ -429,6 +475,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       codingWorkflows,
       profile,
       syncStatus,
+      calendarActionError,
       reloadCloud,
       addPlan,
       deletePlan,
@@ -440,19 +487,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateTodo,
       updateHabit,
       updatePlan,
-    }),
-    [
-      todos,
-      habits,
-      journals,
-      plans,
-      chatMessages,
-      codingWorkflows,
-      profile,
-      syncStatus,
-      reloadCloud,
-    ]
-  );
+  };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

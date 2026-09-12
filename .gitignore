@@ -13,6 +13,7 @@ out
 .env.test.local
 .env.production.local
 .gmail-token.json
+supabase/.temp/
 
 # logs
 npm-debug.log*

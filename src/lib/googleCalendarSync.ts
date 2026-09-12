@@ -4,44 +4,80 @@ import {
   googleConfiguration,
   readStoredGoogleToken,
 } from "@/lib/googleAuth";
+import { labelToMinutes } from "@/lib/dateTime";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
-import type { CalendarSyncState, CalendarSyncStatus } from "@/lib/types";
+import type {
+  CalendarSyncState,
+  CalendarSyncStatus,
+  GoogleCalendarSummary,
+  SavedPlan,
+} from "@/lib/types";
+
+type GoogleCalendar = {
+  id: string;
+  summary?: string;
+  description?: string;
+  timeZone?: string;
+  backgroundColor?: string;
+  foregroundColor?: string;
+  accessRole?: string;
+  primary?: boolean;
+  selected?: boolean;
+  hidden?: boolean;
+};
 
 type GoogleEvent = {
   id?: string;
+  etag?: string;
   status?: string;
   summary?: string;
   description?: string;
   location?: string;
+  colorId?: string;
+  updated?: string;
+  recurrence?: string[];
+  recurringEventId?: string;
   start?: { date?: string; dateTime?: string; timeZone?: string };
   end?: { date?: string; dateTime?: string; timeZone?: string };
-  originalStartTime?: { date?: string; dateTime?: string };
 };
 
-type GoogleEventsResponse = {
-  items?: GoogleEvent[];
+type GoogleListResponse<T> = {
+  items?: T[];
   nextPageToken?: string;
-  timeZone?: string;
+  nextSyncToken?: string;
+};
+
+type GoogleColorsResponse = {
+  event?: Record<string, { background?: string; foreground?: string }>;
+};
+
+type StoredCalendar = {
+  calendar_id: string;
+  summary: string;
+  time_zone: string | null;
+  background_color: string | null;
+  foreground_color: string | null;
+  access_role: string;
+  is_primary: boolean;
+  is_selected: boolean;
+  is_hidden: boolean;
+  sync_token: string | null;
 };
 
 class CalendarSyncError extends Error {
   state: CalendarSyncState;
+  status?: number;
 
-  constructor(state: CalendarSyncState, message: string) {
+  constructor(state: CalendarSyncState, message: string, status?: number) {
     super(message);
     this.name = "CalendarSyncError";
     this.state = state;
+    this.status = status;
   }
 }
 
-function logSync(
-  runId: string,
-  stage: string,
-  details: Record<string, unknown> = {}
-) {
-  console.info(
-    JSON.stringify({ service: "google-calendar-sync", runId, stage, ...details })
-  );
+function logSync(runId: string, stage: string, details: Record<string, unknown> = {}) {
+  console.info(JSON.stringify({ service: "google-calendar-sync", runId, stage, ...details }));
 }
 
 function validateTimeZone(timeZone: string | undefined) {
@@ -88,18 +124,12 @@ function stableLocalId(value: string) {
   return 1_000_000_000 + (hash >>> 0);
 }
 
-function eventToPlan(event: GoogleEvent, timeZone: string) {
-  if (!event.id || event.status === "cancelled" || !event.start || !event.end) {
-    return null;
-  }
-
-  const instanceKey = `${event.id}:${
-    event.originalStartTime?.dateTime ??
-    event.originalStartTime?.date ??
-    event.start.dateTime ??
-    event.start.date ??
-    ""
-  }`;
+function eventToPlan(
+  event: GoogleEvent,
+  calendar: Pick<StoredCalendar, "calendar_id" | "time_zone" | "background_color">
+) {
+  if (!event.id || event.status === "cancelled" || !event.start || !event.end) return null;
+  const timeZone = validateTimeZone(event.start.timeZone ?? calendar.time_zone ?? undefined);
   const allDay = Boolean(event.start.date);
   const start = event.start.dateTime
     ? dateParts(event.start.dateTime, timeZone)
@@ -107,12 +137,11 @@ function eventToPlan(event: GoogleEvent, timeZone: string) {
   const end = event.end.dateTime
     ? dateParts(event.end.dateTime, timeZone)
     : { date: event.end.date ?? start.date, label: "11:59 PM", minutes: 1439 };
-
   if (!start.date) return null;
 
   return {
     user_id: "",
-    local_id: stableLocalId(instanceKey),
+    local_id: stableLocalId(`${calendar.calendar_id}:${event.id}`),
     title: event.summary?.trim() || "Untitled event",
     date: start.date,
     start_label: start.label,
@@ -124,10 +153,15 @@ function eventToPlan(event: GoogleEvent, timeZone: string) {
     category: "other",
     priority: "medium",
     notes: [event.location, event.description].filter(Boolean).join("\n\n"),
-    custom_recurrence: "",
-    series_id: null,
+    custom_recurrence: event.recurrence?.join("\n") ?? "",
+    series_id: event.recurringEventId ?? null,
     excluded_dates: [],
-    google_event_id: instanceKey,
+    google_event_id: event.id,
+    google_calendar_id: calendar.calendar_id,
+    google_recurring_event_id: event.recurringEventId ?? null,
+    google_color: calendar.background_color,
+    google_etag: event.etag ?? null,
+    google_updated_at: event.updated ?? null,
     source: "google",
     all_day: allDay,
     updated_at: new Date().toISOString(),
@@ -145,74 +179,351 @@ async function setSyncState(
     .from("google_tokens")
     .update({ last_sync_status: state, ...values, updated_at: new Date().toISOString() })
     .eq("user_id", userId);
-  if (error) console.error("Google sync status storage failed:", error.message);
+  if (error) {
+    console.error(JSON.stringify({
+      service: "google-calendar-sync",
+      stage: "status_store_failed",
+      message: error.message,
+    }));
+  }
 }
 
-async function fetchEvents(userId: string, timeZone: string, runId: string) {
-  let accessToken = await getGoogleAccessToken(userId);
-  let pageToken = "";
-  let retriedAuthorization = false;
-  const events: GoogleEvent[] = [];
-  const now = Date.now();
-  const timeMin = new Date(now - 30 * 86_400_000).toISOString();
-  const timeMax = new Date(now + 365 * 86_400_000).toISOString();
+async function googleRequest<T>(
+  userId: string,
+  url: string,
+  init: RequestInit = {},
+  forceRefresh = false
+): Promise<{ response: Response; body: T }> {
+  const accessToken = await getGoogleAccessToken(userId, forceRefresh);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...init.headers,
+      },
+      cache: "no-store",
+    });
+  } catch {
+    throw new CalendarSyncError(
+      "unreachable",
+      "Unable to reach Google Calendar. Check the network and try again."
+    );
+  }
+  if (response.status === 401 && !forceRefresh) {
+    return googleRequest<T>(userId, url, init, true);
+  }
+  const body = response.status === 204
+    ? ({} as T)
+    : ((await response.json().catch(() => ({}))) as T);
+  if (!response.ok) {
+    const errorBody = body as { error?: { message?: string } };
+    throw new CalendarSyncError(
+      response.status === 401 || response.status === 403 ? "auth_expired" : "error",
+      errorBody.error?.message ?? `Google Calendar returned HTTP ${response.status}`,
+      response.status
+    );
+  }
+  return { response, body };
+}
 
+async function fetchCalendars(userId: string) {
+  const calendars: GoogleCalendar[] = [];
+  let pageToken = "";
+  let listSyncToken: string | undefined;
+  do {
+    const params = new URLSearchParams({ maxResults: "250", showHidden: "true" });
+    if (pageToken) params.set("pageToken", pageToken);
+    const { body } = await googleRequest<GoogleListResponse<GoogleCalendar>>(
+      userId,
+      `https://www.googleapis.com/calendar/v3/users/me/calendarList?${params}`
+    );
+    calendars.push(
+      ...(body.items ?? []).filter(
+        (calendar) => calendar.id && calendar.accessRole !== "none"
+      )
+    );
+    pageToken = body.nextPageToken ?? "";
+    listSyncToken = body.nextSyncToken ?? listSyncToken;
+  } while (pageToken);
+  return { calendars, listSyncToken };
+}
+
+async function fetchEventColors(userId: string) {
+  const { body } = await googleRequest<GoogleColorsResponse>(
+    userId,
+    "https://www.googleapis.com/calendar/v3/colors"
+  );
+  return body.event ?? {};
+}
+
+async function fetchCalendarEvents(
+  userId: string,
+  calendar: StoredCalendar,
+  timeZone: string,
+  runId: string,
+  forceFull = false
+) {
+  const incremental = Boolean(calendar.sync_token && !forceFull);
+  const events: GoogleEvent[] = [];
+  let pageToken = "";
+  let nextSyncToken: string | undefined;
   do {
     const params = new URLSearchParams({
       singleEvents: "true",
-      showDeleted: "false",
-      orderBy: "startTime",
+      showDeleted: "true",
       maxResults: "2500",
-      timeMin,
-      timeMax,
       timeZone,
     });
+    if (incremental) {
+      params.set("syncToken", calendar.sync_token!);
+    } else {
+      const now = Date.now();
+      params.set("timeMin", new Date(now - 365 * 86_400_000).toISOString());
+      params.set("timeMax", new Date(now + 730 * 86_400_000).toISOString());
+    }
     if (pageToken) params.set("pageToken", pageToken);
 
-    let response: Response;
     try {
-      response = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`,
-        { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" }
+      const { body } = await googleRequest<GoogleListResponse<GoogleEvent>>(
+        userId,
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.calendar_id)}/events?${params}`
       );
-    } catch {
-      throw new CalendarSyncError(
-        "unreachable",
-        "Unable to reach Google Calendar. Check the network and try again."
-      );
+      events.push(...(body.items ?? []));
+      pageToken = body.nextPageToken ?? "";
+      nextSyncToken = body.nextSyncToken ?? nextSyncToken;
+    } catch (error) {
+      if (error instanceof CalendarSyncError && error.status === 410 && incremental) {
+        logSync(runId, "sync_token_expired", {
+          calendar: stableLocalId(calendar.calendar_id),
+        });
+        return fetchCalendarEvents(
+          userId,
+          { ...calendar, sync_token: null },
+          timeZone,
+          runId,
+          true
+        );
+      }
+      throw error;
     }
-
-    if (response.status === 401 && !retriedAuthorization) {
-      logSync(runId, "access_token_rejected_refreshing");
-      accessToken = await getGoogleAccessToken(userId, true);
-      retriedAuthorization = true;
-      continue;
-    }
-
-    const body = (await response.json().catch(() => ({}))) as
-      | GoogleEventsResponse
-      | { error?: { message?: string } };
-    if (!response.ok) {
-      const message =
-        "error" in body && body.error?.message
-          ? body.error.message
-          : `Google Calendar returned HTTP ${response.status}`;
-      throw new CalendarSyncError(
-        response.status === 401 || response.status === 403 ? "auth_expired" : "error",
-        message
-      );
-    }
-
-    const page = body as GoogleEventsResponse;
-    events.push(...(page.items ?? []));
-    pageToken = page.nextPageToken ?? "";
-    logSync(runId, "google_page_received", {
-      pageEvents: page.items?.length ?? 0,
-      hasNextPage: Boolean(pageToken),
-    });
   } while (pageToken);
 
-  return events;
+  logSync(runId, "calendar_received", {
+    calendar: stableLocalId(calendar.calendar_id),
+    events: events.length,
+    incremental,
+  });
+  return { events, nextSyncToken: nextSyncToken ?? null, incremental };
+}
+
+async function storeCalendars(userId: string, calendars: GoogleCalendar[]) {
+  const supabase = getServiceSupabaseClient();
+  if (!supabase) {
+    throw new CalendarSyncError("misconfigured", "A Supabase server key is not configured");
+  }
+  const { data: existing, error: existingError } = await supabase
+    .from("google_calendars")
+    .select("calendar_id,sync_token")
+    .eq("user_id", userId);
+  if (existingError) {
+    throw new CalendarSyncError(
+      "error",
+      `Unable to read calendar metadata: ${existingError.message}`
+    );
+  }
+  const syncTokens = new Map(
+    (existing ?? []).map((row) => [
+      String(row.calendar_id),
+      row.sync_token ? String(row.sync_token) : null,
+    ])
+  );
+  const rows = calendars.map((calendar) => ({
+    user_id: userId,
+    calendar_id: calendar.id,
+    summary: calendar.summary?.trim() || "Calendar",
+    description: calendar.description ?? null,
+    time_zone: calendar.timeZone ?? null,
+    background_color: calendar.backgroundColor ?? null,
+    foreground_color: calendar.foregroundColor ?? null,
+    access_role: calendar.accessRole ?? "reader",
+    is_primary: Boolean(calendar.primary),
+    is_selected: calendar.selected !== false,
+    is_hidden: Boolean(calendar.hidden),
+    sync_token: syncTokens.get(calendar.id) ?? null,
+    updated_at: new Date().toISOString(),
+  }));
+  if (rows.length > 0) {
+    const { error } = await supabase
+      .from("google_calendars")
+      .upsert(rows, { onConflict: "user_id,calendar_id" });
+    if (error) {
+      throw new CalendarSyncError(
+        "error",
+        `Unable to save calendar metadata: ${error.message}`
+      );
+    }
+  }
+
+  const currentIds = new Set(calendars.map((calendar) => calendar.id));
+  const removed = (existing ?? [])
+    .map((row) => String(row.calendar_id))
+    .filter((id) => !currentIds.has(id));
+  for (const calendarId of removed) {
+    const { error: planError } = await supabase
+      .from("plans")
+      .delete()
+      .eq("user_id", userId)
+      .eq("google_calendar_id", calendarId);
+    if (planError) {
+      throw new CalendarSyncError(
+        "error",
+        `Unable to remove stale calendar events: ${planError.message}`
+      );
+    }
+    const { error: calendarError } = await supabase
+      .from("google_calendars")
+      .delete()
+      .eq("user_id", userId)
+      .eq("calendar_id", calendarId);
+    if (calendarError) {
+      throw new CalendarSyncError(
+        "error",
+        `Unable to remove stale calendar metadata: ${calendarError.message}`
+      );
+    }
+  }
+  return rows as StoredCalendar[];
+}
+
+async function syncOneCalendar(
+  userId: string,
+  calendar: StoredCalendar,
+  eventColors: Record<string, { background?: string; foreground?: string }>,
+  timeZone: string,
+  runId: string
+) {
+  const supabase = getServiceSupabaseClient();
+  if (!supabase) {
+    throw new CalendarSyncError("misconfigured", "A Supabase server key is not configured");
+  }
+  const result = await fetchCalendarEvents(userId, calendar, timeZone, runId);
+  const activeRows = result.events
+    .filter((event) => event.status !== "cancelled")
+    .map((event) => {
+      const row = eventToPlan(event, calendar);
+      if (row && event.colorId && eventColors[event.colorId]?.background) {
+        row.google_color = eventColors[event.colorId].background ?? row.google_color;
+      }
+      return row;
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null)
+    .map((row) => ({ ...row, user_id: userId }));
+
+  if (activeRows.length > 0) {
+    const { error } = await supabase.from("plans").upsert(activeRows, {
+      onConflict: "user_id,google_calendar_id,google_event_id",
+    });
+    if (error) {
+      throw new CalendarSyncError(
+        "error",
+        `Unable to save calendar events: ${error.message}`
+      );
+    }
+  }
+
+  const cancelledIds = result.events
+    .filter((event) => event.status === "cancelled" && event.id)
+    .map((event) => event.id!);
+  if (cancelledIds.length > 0) {
+    const { error } = await supabase
+      .from("plans")
+      .delete()
+      .eq("user_id", userId)
+      .eq("google_calendar_id", calendar.calendar_id)
+      .in("google_event_id", cancelledIds);
+    if (error) {
+      throw new CalendarSyncError(
+        "error",
+        `Unable to remove deleted events: ${error.message}`
+      );
+    }
+  }
+
+  let removed = cancelledIds.length;
+  if (!result.incremental) {
+    const { data: existing, error: existingError } = await supabase
+      .from("plans")
+      .select("local_id,google_event_id")
+      .eq("user_id", userId)
+      .eq("google_calendar_id", calendar.calendar_id)
+      .eq("source", "google");
+    if (existingError) {
+      throw new CalendarSyncError(
+        "error",
+        `Unable to compare calendar events: ${existingError.message}`
+      );
+    }
+    const currentIds = new Set(activeRows.map((row) => row.google_event_id));
+    const staleLocalIds = (existing ?? [])
+      .filter(
+        (row) => row.google_event_id && !currentIds.has(String(row.google_event_id))
+      )
+      .map((row) => Number(row.local_id));
+    if (staleLocalIds.length > 0) {
+      const { error } = await supabase
+        .from("plans")
+        .delete()
+        .eq("user_id", userId)
+        .in("local_id", staleLocalIds);
+      if (error) {
+        throw new CalendarSyncError(
+          "error",
+          `Unable to remove stale events: ${error.message}`
+        );
+      }
+    }
+    removed += staleLocalIds.length;
+  }
+
+  const { error: metadataError } = await supabase
+    .from("google_calendars")
+    .update({
+      sync_token: result.nextSyncToken,
+      last_synced_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", userId)
+    .eq("calendar_id", calendar.calendar_id);
+  if (metadataError) {
+    throw new CalendarSyncError(
+      "error",
+      `Unable to store calendar sync token: ${metadataError.message}`
+    );
+  }
+  return { imported: activeRows.length, removed };
+}
+
+async function readCalendarSummaries(
+  userId: string
+): Promise<GoogleCalendarSummary[]> {
+  const supabase = getServiceSupabaseClient();
+  if (!supabase) return [];
+  const { data } = await supabase
+    .from("google_calendars")
+    .select("calendar_id,summary,background_color,access_role,is_primary")
+    .eq("user_id", userId)
+    .order("is_primary", { ascending: false })
+    .order("summary");
+  return (data ?? []).map((calendar) => ({
+    id: String(calendar.calendar_id),
+    name: String(calendar.summary),
+    color: calendar.background_color ? String(calendar.background_color) : null,
+    accessRole: String(calendar.access_role),
+    primary: Boolean(calendar.is_primary),
+  }));
 }
 
 export async function getCalendarSyncStatus(
@@ -227,6 +538,8 @@ export async function getCalendarSyncStatus(
       lastAttemptAt: null,
       error: `Missing server configuration: ${config.missing.join(", ")}`,
       timeZone: null,
+      connectedEmail: null,
+      calendars: [],
     };
   }
 
@@ -235,7 +548,7 @@ export async function getCalendarSyncStatus(
   const { data, error } = await supabase
     .from("google_tokens")
     .select(
-      "last_sync_status,last_sync_error,last_successful_sync_at,last_sync_attempt_at,calendar_time_zone"
+      "scope,last_sync_status,last_sync_error,last_successful_sync_at,last_sync_attempt_at,calendar_time_zone,connected_email"
     )
     .eq("user_id", userId)
     .maybeSingle();
@@ -247,6 +560,8 @@ export async function getCalendarSyncStatus(
       lastAttemptAt: null,
       error: `Calendar sync database migration is missing: ${error.message}`,
       timeZone: null,
+      connectedEmail: null,
+      calendars: [],
     };
   }
   if (!data) {
@@ -257,6 +572,25 @@ export async function getCalendarSyncStatus(
       lastAttemptAt: null,
       error: null,
       timeZone: null,
+      connectedEmail: null,
+      calendars: [],
+    };
+  }
+  const scopes = String(data.scope ?? "").split(/\s+/);
+  if (!scopes.includes("https://www.googleapis.com/auth/calendar")) {
+    return {
+      state: "auth_expired",
+      connected: true,
+      lastSuccessfulSyncAt: data.last_successful_sync_at
+        ? String(data.last_successful_sync_at)
+        : null,
+      lastAttemptAt: data.last_sync_attempt_at
+        ? String(data.last_sync_attempt_at)
+        : null,
+      error: "Reconnect Google Calendar to approve multi-calendar editing.",
+      timeZone: data.calendar_time_zone ? String(data.calendar_time_zone) : null,
+      connectedEmail: data.connected_email ? String(data.connected_email) : null,
+      calendars: await readCalendarSummaries(userId),
     };
   }
   return {
@@ -270,6 +604,8 @@ export async function getCalendarSyncStatus(
       : null,
     error: data.last_sync_error ? String(data.last_sync_error) : null,
     timeZone: data.calendar_time_zone ? String(data.calendar_time_zone) : null,
+    connectedEmail: data.connected_email ? String(data.connected_email) : null,
+    calendars: await readCalendarSummaries(userId),
   };
 }
 
@@ -285,48 +621,39 @@ export async function syncGoogleCalendarForUser(
 
   try {
     const token = await readStoredGoogleToken(userId);
-    if (!token) throw new CalendarSyncError("not_connected", "Google Calendar is not connected.");
+    if (!token) {
+      throw new CalendarSyncError(
+        "not_connected",
+        "Google Calendar is not connected."
+      );
+    }
     await setSyncState(userId, "syncing", {
       last_sync_attempt_at: attemptedAt,
       last_sync_error: null,
       calendar_time_zone: timeZone,
     });
 
-    const events = await fetchEvents(userId, timeZone, runId);
-    const rows = events
-      .map((event) => eventToPlan(event, timeZone))
-      .filter((row): row is NonNullable<typeof row> => row !== null)
-      .map((row) => ({ ...row, user_id: userId }));
-    logSync(runId, "events_mapped", { received: events.length, mapped: rows.length });
-
-    const supabase = getServiceSupabaseClient();
-    if (!supabase) throw new CalendarSyncError("misconfigured", "A Supabase server key is not configured");
-
-    const { data: existing, error: existingError } = await supabase
-      .from("plans")
-      .select("local_id,google_event_id")
-      .eq("user_id", userId)
-      .eq("source", "google");
-    if (existingError) throw new CalendarSyncError("error", `Unable to read synced plans: ${existingError.message}`);
-
-    if (rows.length > 0) {
-      const { error } = await supabase.from("plans").upsert(rows, {
-        onConflict: "user_id,local_id",
-      });
-      if (error) throw new CalendarSyncError("error", `Unable to save calendar events: ${error.message}`);
+    const [{ calendars, listSyncToken }, eventColors] = await Promise.all([
+      fetchCalendars(userId),
+      fetchEventColors(userId),
+    ]);
+    if (calendars.length === 0) {
+      throw new CalendarSyncError("error", "Google returned no readable calendars.");
     }
-
-    const currentIds = new Set(rows.map((row) => row.google_event_id));
-    const staleIds = (existing ?? [])
-      .filter((row) => row.google_event_id && !currentIds.has(String(row.google_event_id)))
-      .map((row) => Number(row.local_id));
-    for (let index = 0; index < staleIds.length; index += 100) {
-      const { error } = await supabase
-        .from("plans")
-        .delete()
-        .eq("user_id", userId)
-        .in("local_id", staleIds.slice(index, index + 100));
-      if (error) throw new CalendarSyncError("error", `Unable to remove deleted events: ${error.message}`);
+    const stored = await storeCalendars(userId, calendars);
+    const primary = calendars.find((calendar) => calendar.primary);
+    const connectedEmail = primary?.id.includes("@") ? primary.id : null;
+    const totals = { imported: 0, removed: 0 };
+    for (const calendar of stored) {
+      const result = await syncOneCalendar(
+        userId,
+        calendar,
+        eventColors,
+        timeZone,
+        runId
+      );
+      totals.imported += result.imported;
+      totals.removed += result.removed;
     }
 
     const completedAt = new Date().toISOString();
@@ -335,8 +662,22 @@ export async function syncGoogleCalendarForUser(
       last_sync_attempt_at: attemptedAt,
       last_sync_error: null,
       calendar_time_zone: timeZone,
+      connected_email: connectedEmail,
+      calendar_list_sync_token: listSyncToken ?? null,
     });
-    logSync(runId, "completed", { imported: rows.length, removed: staleIds.length });
+    const supabase = getServiceSupabaseClient();
+    await supabase
+      ?.from("profiles")
+      .upsert({
+        user_id: userId,
+        gmail_connected: true,
+        updated_at: completedAt,
+      }, { onConflict: "user_id" });
+    logSync(runId, "completed", {
+      calendars: stored.length,
+      imported: totals.imported,
+      removed: totals.removed,
+    });
     return {
       state: "synced",
       connected: true,
@@ -344,10 +685,13 @@ export async function syncGoogleCalendarForUser(
       lastAttemptAt: attemptedAt,
       error: null,
       timeZone,
-      eventsImported: rows.length,
+      eventsImported: totals.imported,
+      connectedEmail,
+      calendars: await readCalendarSummaries(userId),
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown calendar sync failure";
+    const message =
+      error instanceof Error ? error.message : "Unknown calendar sync failure";
     const state =
       error instanceof CalendarSyncError
         ? error.state
@@ -356,7 +700,15 @@ export async function syncGoogleCalendarForUser(
           : /not configured|migration is missing/i.test(message)
             ? "misconfigured"
             : "error";
-    console.error(JSON.stringify({ service: "google-calendar-sync", runId, stage: "failed", state, message }));
+    console.error(
+      JSON.stringify({
+        service: "google-calendar-sync",
+        runId,
+        stage: "failed",
+        state,
+        message,
+      })
+    );
     await setSyncState(userId, state, {
       last_sync_attempt_at: attemptedAt,
       last_sync_error: message,
@@ -369,6 +721,157 @@ export async function syncGoogleCalendarForUser(
       lastAttemptAt: attemptedAt,
       error: message,
       timeZone,
+      connectedEmail: previousStatus?.connectedEmail ?? null,
+      calendars: previousStatus?.calendars ?? [],
     };
   }
+}
+
+function clockValue(label: string) {
+  const minutes = labelToMinutes(label);
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(
+    minutes % 60
+  ).padStart(2, "0")}:00`;
+}
+
+function nextDate(date: string) {
+  const value = new Date(`${date}T00:00:00`);
+  value.setDate(value.getDate() + 1);
+  return value.toISOString().split("T")[0];
+}
+
+function recurrenceRules(plan: SavedPlan) {
+  if (plan.recurrence === "daily") return ["RRULE:FREQ=DAILY"];
+  if (plan.recurrence === "weekly") return ["RRULE:FREQ=WEEKLY"];
+  if (plan.recurrence === "weekdays") {
+    return ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"];
+  }
+  if (plan.recurrence === "weekends") {
+    return ["RRULE:FREQ=WEEKLY;BYDAY=SA,SU"];
+  }
+  return undefined;
+}
+
+function googleEventBody(plan: SavedPlan, timeZone: string) {
+  return {
+    summary: plan.title,
+    description: plan.notes || undefined,
+    start: plan.allDay
+      ? { date: plan.date }
+      : {
+          dateTime: `${plan.date}T${clockValue(plan.startLabel)}`,
+          timeZone,
+        },
+    end: plan.allDay
+      ? { date: nextDate(plan.date) }
+      : {
+          dateTime: `${plan.date}T${clockValue(plan.endLabel)}`,
+          timeZone,
+        },
+    recurrence: recurrenceRules(plan),
+  };
+}
+
+async function writableCalendar(userId: string, requested?: string) {
+  const supabase = getServiceSupabaseClient();
+  if (!supabase) {
+    throw new CalendarSyncError("misconfigured", "A Supabase server key is not configured");
+  }
+  let query = supabase
+    .from("google_calendars")
+    .select("calendar_id,access_role,time_zone")
+    .eq("user_id", userId);
+  query = requested
+    ? query.eq("calendar_id", requested)
+    : query.eq("is_primary", true);
+  const { data, error } = await query.maybeSingle();
+  if (error) {
+    throw new CalendarSyncError(
+      "error",
+      `Unable to resolve destination calendar: ${error.message}`
+    );
+  }
+  if (!data || !["writer", "owner"].includes(String(data.access_role))) {
+    throw new CalendarSyncError("error", "The selected Google calendar is read-only.");
+  }
+  return {
+    id: String(data.calendar_id),
+    timeZone: validateTimeZone(
+      data.time_zone ? String(data.time_zone) : undefined
+    ),
+  };
+}
+
+export async function createGoogleCalendarEvent(
+  userId: string,
+  plan: SavedPlan
+) {
+  const calendar = await writableCalendar(userId, plan.googleCalendarId);
+  await googleRequest<GoogleEvent>(
+    userId,
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      calendar.id
+    )}/events`,
+    {
+      method: "POST",
+      body: JSON.stringify(googleEventBody(plan, calendar.timeZone)),
+    }
+  );
+  const status = await syncGoogleCalendarForUser(userId, calendar.timeZone);
+  const supabase = getServiceSupabaseClient();
+  if (status.state === "synced" && supabase) {
+    const { error } = await supabase
+      .from("plans")
+      .delete()
+      .eq("user_id", userId)
+      .eq("local_id", plan.id)
+      .neq("source", "google");
+    if (error) {
+      throw new CalendarSyncError(
+        "error",
+        `Google event was created, but the local draft could not be cleared: ${error.message}`
+      );
+    }
+  }
+  return status;
+}
+
+export async function updateGoogleCalendarEvent(
+  userId: string,
+  plan: SavedPlan
+) {
+  if (!plan.googleEventId || !plan.googleCalendarId) {
+    throw new CalendarSyncError(
+      "error",
+      "This event is not linked to Google Calendar."
+    );
+  }
+  const calendar = await writableCalendar(userId, plan.googleCalendarId);
+  await googleRequest<GoogleEvent>(
+    userId,
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      calendar.id
+    )}/events/${encodeURIComponent(plan.googleEventId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(googleEventBody(plan, calendar.timeZone)),
+    }
+  );
+  return syncGoogleCalendarForUser(userId, calendar.timeZone);
+}
+
+export async function deleteGoogleCalendarEvent(
+  userId: string,
+  calendarId: string,
+  eventId: string
+) {
+  await writableCalendar(userId, calendarId);
+  await googleRequest<Record<string, never>>(
+    userId,
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      calendarId
+    )}/events/${encodeURIComponent(eventId)}`,
+    { method: "DELETE" }
+  );
+  return syncGoogleCalendarForUser(userId);
 }

@@ -85,6 +85,11 @@ type PlanRow = {
   excluded_dates?: string[] | null;
   source?: SavedPlan["source"] | null;
   google_event_id?: string | null;
+  google_calendar_id?: string | null;
+  google_recurring_event_id?: string | null;
+  google_color?: string | null;
+  google_etag?: string | null;
+  google_updated_at?: string | null;
   all_day?: boolean | null;
 };
 
@@ -190,6 +195,11 @@ export async function loadCloudSnapshot(userId: string): Promise<CloudSnapshot> 
         excludedDates: plan.excluded_dates ?? [],
         source: plan.source ?? "ass",
         googleEventId: plan.google_event_id ?? undefined,
+        googleCalendarId: plan.google_calendar_id ?? undefined,
+        googleRecurringEventId: plan.google_recurring_event_id ?? undefined,
+        googleColor: plan.google_color ?? undefined,
+        googleEtag: plan.google_etag ?? undefined,
+        googleUpdatedAt: plan.google_updated_at ?? undefined,
         allDay: Boolean(plan.all_day),
       })),
   };
@@ -218,8 +228,35 @@ export async function saveCloudSnapshot(userId: string, snapshot: LocalSnapshot)
     replaceRows(userId, "todos", snapshot.todos.map(todoToRow)),
     replaceRows(userId, "habits", snapshot.habits.map(habitToRow)),
     replaceRows(userId, "journal_entries", snapshot.journals.map(journalToRow)),
-    replaceRows(userId, "plans", snapshot.plans.map(planToRow)),
+    replacePlans(userId, snapshot.plans),
   ]);
+}
+
+async function replacePlans(userId: string, plans: SavedPlan[]) {
+  const supabase = getBrowserSupabaseClient();
+  if (!supabase) return;
+
+  const localPlans = plans.filter((plan) => plan.source !== "google");
+  const { error: deleteError } = await supabase
+    .from("plans")
+    .delete()
+    .eq("user_id", userId)
+    .neq("source", "google");
+  if (deleteError) {
+    throw new Error(`Supabase plans replace failed: ${deleteError.message}`);
+  }
+  if (localPlans.length === 0) return;
+
+  const { error: insertError } = await supabase.from("plans").insert(
+    localPlans.map((plan) => ({
+      ...planToRow(plan),
+      user_id: userId,
+      updated_at: new Date().toISOString(),
+    }))
+  );
+  if (insertError) {
+    throw new Error(`Supabase plans insert failed: ${insertError.message}`);
+  }
 }
 
 async function replaceRows(
@@ -308,6 +345,11 @@ function planToRow(plan: SavedPlan) {
     excluded_dates: plan.excludedDates ?? [],
     source: plan.source ?? "ass",
     google_event_id: plan.googleEventId ?? null,
+    google_calendar_id: plan.googleCalendarId ?? null,
+    google_recurring_event_id: plan.googleRecurringEventId ?? null,
+    google_color: plan.googleColor ?? null,
+    google_etag: plan.googleEtag ?? null,
+    google_updated_at: plan.googleUpdatedAt ?? null,
     all_day: plan.allDay ?? false,
   };
 }

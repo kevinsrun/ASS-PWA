@@ -43,6 +43,8 @@ export default function CalendarSyncIndicator({
   compact?: boolean;
 }) {
   const healthy = status.state === "synced" || status.state === "ready";
+  const needsAuthorization =
+    !status.connected || status.state === "auth_expired";
   const Icon = loading
     ? RefreshCw
     : healthy
@@ -56,14 +58,26 @@ export default function CalendarSyncIndicator({
       <Icon size={18} className={loading ? "animate-spin" : ""} aria-hidden="true" />
       <div>
         <strong>{syncStatusCopy(status, loading)}</strong>
+        {!compact && status.connectedEmail ? (
+          <span>
+            {status.connectedEmail}
+            {status.calendars.length > 0
+              ? ` · ${status.calendars.length} calendar${status.calendars.length === 1 ? "" : "s"}`
+              : ""}
+          </span>
+        ) : null}
         {!compact && status.error ? <span>{status.error}</span> : null}
       </div>
       <button
         type="button"
-        onClick={status.connected ? onSync : onConnect}
+        onClick={needsAuthorization ? onConnect : onSync}
         disabled={loading}
       >
-        {status.connected ? "Sync now" : "Connect"}
+        {status.state === "auth_expired"
+          ? "Reconnect"
+          : status.connected
+            ? "Sync now"
+            : "Connect"}
       </button>
     </div>
   );

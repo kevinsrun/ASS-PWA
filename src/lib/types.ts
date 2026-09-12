@@ -48,7 +48,20 @@ export type SavedPlan = {
   excludedDates?: string[];
   source?: "ass" | "google";
   googleEventId?: string;
+  googleCalendarId?: string;
+  googleRecurringEventId?: string;
+  googleColor?: string;
+  googleEtag?: string;
+  googleUpdatedAt?: string;
   allDay?: boolean;
+};
+
+export type GoogleCalendarSummary = {
+  id: string;
+  name: string;
+  color: string | null;
+  accessRole: string;
+  primary: boolean;
 };
 
 export type CalendarSyncState =
@@ -69,6 +82,8 @@ export type CalendarSyncStatus = {
   error: string | null;
   timeZone: string | null;
   eventsImported?: number;
+  connectedEmail: string | null;
+  calendars: GoogleCalendarSummary[];
 };
 
 export type PlanBlock = {
