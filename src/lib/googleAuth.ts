@@ -133,7 +133,7 @@ async function requestGoogleToken(params: URLSearchParams) {
 
 async function writeStoredToken(userId: string, token: GoogleToken) {
   const supabase = getServiceSupabaseClient();
-  if (!supabase) throw new Error("SUPABASE_SECRET_KEY is not configured");
+  if (!supabase) throw new Error("A Supabase server key is not configured");
   const { error } = await supabase.from("google_tokens").upsert({
     user_id: userId,
     access_token: encrypt(token.access_token),
@@ -166,7 +166,7 @@ export async function exchangeGoogleCode(code: string, userId: string) {
 
 export async function readStoredGoogleToken(userId: string) {
   const supabase = getServiceSupabaseClient();
-  if (!supabase) throw new Error("SUPABASE_SECRET_KEY is not configured");
+  if (!supabase) throw new Error("A Supabase server key is not configured");
   const { data, error } = await supabase
     .from("google_tokens")
     .select("access_token,refresh_token,scope,token_type,expires_at")
@@ -227,8 +227,13 @@ export function googleConfiguration() {
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
     "GOOGLE_REDIRECT_URI",
-    "SUPABASE_SECRET_KEY",
   ].filter((name) => !process.env[name]?.trim());
+  if (
+    !process.env.SUPABASE_SECRET_KEY?.trim() &&
+    !process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+  ) {
+    missing.push("SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY");
+  }
   return {
     ready: missing.length === 0,
     missing,

@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   const supabase = getServiceSupabaseClient();
   if (!supabase) {
     return NextResponse.json(
-      { ok: false, error: "SUPABASE_SECRET_KEY is not configured" },
+      { ok: false, error: "A Supabase server key is not configured" },
       { status: 503 }
     );
   }

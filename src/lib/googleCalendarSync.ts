@@ -231,7 +231,7 @@ export async function getCalendarSyncStatus(
   }
 
   const supabase = getServiceSupabaseClient();
-  if (!supabase) throw new Error("SUPABASE_SECRET_KEY is not configured");
+  if (!supabase) throw new Error("A Supabase server key is not configured");
   const { data, error } = await supabase
     .from("google_tokens")
     .select(
@@ -300,7 +300,7 @@ export async function syncGoogleCalendarForUser(
     logSync(runId, "events_mapped", { received: events.length, mapped: rows.length });
 
     const supabase = getServiceSupabaseClient();
-    if (!supabase) throw new CalendarSyncError("misconfigured", "SUPABASE_SECRET_KEY is not configured");
+    if (!supabase) throw new CalendarSyncError("misconfigured", "A Supabase server key is not configured");
 
     const { data: existing, error: existingError } = await supabase
       .from("plans")
