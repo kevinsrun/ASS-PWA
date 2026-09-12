@@ -48,6 +48,7 @@ export type SavedPlan = {
   excludedDates?: string[];
   source?: "ass" | "google";
   googleEventId?: string;
+  googleAccountId?: string;
   googleCalendarId?: string;
   googleRecurringEventId?: string;
   googleColor?: string;
@@ -62,6 +63,35 @@ export type GoogleCalendarSummary = {
   color: string | null;
   accessRole: string;
   primary: boolean;
+};
+
+export type GoogleAccountSummary = {
+  id: string;
+  email: string;
+  name: string | null;
+  avatarUrl: string | null;
+  color: string | null;
+  state: CalendarSyncState;
+  lastSuccessfulSyncAt: string | null;
+  lastEmailSyncAt: string | null;
+  error: string | null;
+  calendarCount: number;
+};
+
+export type EmailIntelligenceItem = {
+  id: string;
+  accountEmail: string;
+  sender: string;
+  title: string;
+  summary: string;
+  type: "task" | "deadline" | "meeting" | "reminder" | "project_update" | "scholarship" | "research" | "club_event" | "financial_aid" | "travel" | "interview" | "invoice" | "no_action";
+  importance: "low" | "normal" | "high" | "urgent";
+  actionRequired: boolean;
+  date: string | null;
+  time: string | null;
+  conflictDetails: string[];
+  recommendations: string[];
+  receivedAt: string | null;
 };
 
 export type CalendarSyncState =
@@ -84,6 +114,7 @@ export type CalendarSyncStatus = {
   eventsImported?: number;
   connectedEmail: string | null;
   calendars: GoogleCalendarSummary[];
+  accounts: GoogleAccountSummary[];
 };
 
 export type PlanBlock = {

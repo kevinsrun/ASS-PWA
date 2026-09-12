@@ -49,6 +49,7 @@ function readPlan(value: unknown): SavedPlan {
     excludedDates: plan.excludedDates ?? [],
     source: plan.source ?? "ass",
     googleEventId: plan.googleEventId,
+    googleAccountId: plan.googleAccountId,
     googleCalendarId: plan.googleCalendarId,
     googleRecurringEventId: plan.googleRecurringEventId,
     googleColor: plan.googleColor,
@@ -103,6 +104,7 @@ export async function DELETE(request: NextRequest) {
     const body = (await request.json()) as {
       googleCalendarId?: string;
       googleEventId?: string;
+      googleAccountId?: string;
     };
     if (!body.googleCalendarId || !body.googleEventId) {
       throw new ApiAuthError("Google calendar and event IDs are required.", 400);
@@ -110,7 +112,8 @@ export async function DELETE(request: NextRequest) {
     const status = await deleteGoogleCalendarEvent(
       user.id,
       body.googleCalendarId,
-      body.googleEventId
+      body.googleEventId,
+      body.googleAccountId
     );
     console.info(
       JSON.stringify({

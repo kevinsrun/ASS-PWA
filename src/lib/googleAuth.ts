@@ -8,6 +8,7 @@ import {
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 
 export type GoogleToken = {
+  id?: string;
   access_token: string;
   expires_in?: number;
   expires_at?: number;
@@ -16,11 +17,27 @@ export type GoogleToken = {
   token_type?: string;
 };
 
+export type GoogleAccountRecord = GoogleToken & {
+  id: string;
+  userId: string;
+  googleSubject: string | null;
+  email: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  accountColor: string | null;
+  lastSuccessfulSyncAt: string | null;
+  lastEmailSyncAt: string | null;
+  calendarTimeZone: string;
+};
+
 type OAuthState = { userId: string; expiresAt: number; nonce: string };
 
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/calendar",
+  "openid",
+  "email",
+  "profile",
 ];
 
 function requireEnv(name: string) {
@@ -131,23 +148,91 @@ async function requestGoogleToken(params: URLSearchParams) {
   };
 }
 
-async function writeStoredToken(userId: string, token: GoogleToken) {
+async function fetchGoogleIdentity(accessToken: string) {
+  const response = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Unable to read the connected Google profile: HTTP ${response.status}`);
+  }
+  return (await response.json()) as {
+    sub?: string;
+    email?: string;
+    name?: string;
+    picture?: string;
+  };
+}
+
+async function writeStoredToken(
+  userId: string,
+  token: GoogleToken,
+  identity: Awaited<ReturnType<typeof fetchGoogleIdentity>>,
+  existingAccountId?: string
+) {
   const supabase = getServiceSupabaseClient();
   if (!supabase) throw new Error("A Supabase server key is not configured");
-  const { error } = await supabase.from("google_tokens").upsert({
+  const base = {
     user_id: userId,
+    google_subject: identity.sub ?? null,
+    connected_email: identity.email ?? null,
+    display_name: identity.name ?? null,
+    avatar_url: identity.picture ?? null,
     access_token: encrypt(token.access_token),
-    refresh_token: token.refresh_token ? encrypt(token.refresh_token) : null,
     scope: token.scope ?? null,
     token_type: token.token_type ?? "Bearer",
     expires_at: token.expires_at ?? null,
     last_sync_status: "ready",
     last_sync_error: null,
     updated_at: new Date().toISOString(),
-  });
+  };
+  let accountId = existingAccountId;
+  if (!accountId && identity.sub) {
+    const { data } = await supabase
+      .from("google_tokens")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("google_subject", identity.sub)
+      .maybeSingle();
+    accountId = data?.id ? String(data.id) : undefined;
+  }
+  // Older single-account rows predate OpenID profile fields. Match those by
+  // email on the first reconnect so adding multi-account support never leaves
+  // behind a duplicate legacy connection.
+  if (!accountId && identity.email) {
+    const { data } = await supabase
+      .from("google_tokens")
+      .select("id")
+      .eq("user_id", userId)
+      .ilike("connected_email", identity.email)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    accountId = data?.id ? String(data.id) : undefined;
+  }
+  if (accountId) {
+    const update = {
+      ...base,
+      ...(token.refresh_token
+        ? { refresh_token: encrypt(token.refresh_token) }
+        : {}),
+    };
+    const { error } = await supabase
+      .from("google_tokens")
+      .update(update)
+      .eq("id", accountId)
+      .eq("user_id", userId);
+    if (error) throw new Error(`Unable to update Google credentials: ${error.message}`);
+    return accountId;
+  }
+  const { data, error } = await supabase.from("google_tokens").insert({
+    ...base,
+    refresh_token: token.refresh_token ? encrypt(token.refresh_token) : null,
+  }).select("id").single();
   if (error) {
     throw new Error(`Unable to store Google credentials: ${error.message}`);
   }
+  return String(data.id);
 }
 
 export async function exchangeGoogleCode(code: string, userId: string) {
@@ -160,21 +245,42 @@ export async function exchangeGoogleCode(code: string, userId: string) {
       grant_type: "authorization_code",
     })
   );
-  await writeStoredToken(userId, token);
-  return token;
+  const identity = await fetchGoogleIdentity(token.access_token);
+  const accountId = await writeStoredToken(userId, token, identity);
+  return { token, accountId, identity };
 }
 
-export async function readStoredGoogleToken(userId: string) {
+export async function listGoogleAccounts(userId: string) {
   const supabase = getServiceSupabaseClient();
   if (!supabase) throw new Error("A Supabase server key is not configured");
   const { data, error } = await supabase
     .from("google_tokens")
-    .select("access_token,refresh_token,scope,token_type,expires_at")
+    .select("id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,scope,last_sync_status,last_sync_error,last_successful_sync_at,last_email_sync_at,calendar_time_zone")
     .eq("user_id", userId)
-    .maybeSingle();
+    .order("updated_at", { ascending: false });
+  if (error) throw new Error(`Unable to list Google accounts: ${error.message}`);
+  return data ?? [];
+}
+
+export async function readStoredGoogleToken(userId: string, accountId?: string) {
+  const supabase = getServiceSupabaseClient();
+  if (!supabase) throw new Error("A Supabase server key is not configured");
+  let query = supabase
+    .from("google_tokens")
+    .select("id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,access_token,refresh_token,scope,token_type,expires_at,last_successful_sync_at,last_email_sync_at,calendar_time_zone")
+    .eq("user_id", userId);
+  query = accountId ? query.eq("id", accountId) : query.order("updated_at", { ascending: false }).limit(1);
+  const { data, error } = await query.maybeSingle();
   if (error) throw new Error(`Unable to read Google credentials: ${error.message}`);
   if (!data) return null;
   return {
+    id: String(data.id),
+    userId,
+    googleSubject: data.google_subject ? String(data.google_subject) : null,
+    email: data.connected_email ? String(data.connected_email) : null,
+    displayName: data.display_name ? String(data.display_name) : null,
+    avatarUrl: data.avatar_url ? String(data.avatar_url) : null,
+    accountColor: data.account_color ? String(data.account_color) : null,
     access_token: decrypt(String(data.access_token)),
     refresh_token: data.refresh_token
       ? decrypt(String(data.refresh_token))
@@ -182,10 +288,13 @@ export async function readStoredGoogleToken(userId: string) {
     scope: data.scope ? String(data.scope) : undefined,
     token_type: data.token_type ? String(data.token_type) : undefined,
     expires_at: data.expires_at ? Number(data.expires_at) : undefined,
-  } satisfies GoogleToken;
+    lastSuccessfulSyncAt: data.last_successful_sync_at ? String(data.last_successful_sync_at) : null,
+    lastEmailSyncAt: data.last_email_sync_at ? String(data.last_email_sync_at) : null,
+    calendarTimeZone: data.calendar_time_zone ? String(data.calendar_time_zone) : "UTC",
+  } satisfies GoogleAccountRecord;
 }
 
-async function refreshGoogleToken(userId: string, token: GoogleToken) {
+async function refreshGoogleToken(userId: string, token: GoogleAccountRecord) {
   if (!token.refresh_token) {
     throw new Error("Google authorization expired: no refresh token was stored");
   }
@@ -202,15 +311,21 @@ async function refreshGoogleToken(userId: string, token: GoogleToken) {
     ...refreshed,
     refresh_token: refreshed.refresh_token ?? token.refresh_token,
   };
-  await writeStoredToken(userId, merged);
+  await writeStoredToken(userId, merged, {
+    sub: token.googleSubject ?? undefined,
+    email: token.email ?? undefined,
+    name: token.displayName ?? undefined,
+    picture: token.avatarUrl ?? undefined,
+  }, token.id);
   return merged;
 }
 
 export async function getGoogleAccessToken(
   userId: string,
+  accountId?: string,
   forceRefresh = false
 ) {
-  const token = await readStoredGoogleToken(userId);
+  const token = await readStoredGoogleToken(userId, accountId);
   if (!token) throw new Error("Google Calendar is not connected");
   if (
     forceRefresh ||

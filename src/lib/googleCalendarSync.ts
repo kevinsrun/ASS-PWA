@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import {
   getGoogleAccessToken,
   googleConfiguration,
+  listGoogleAccounts,
   readStoredGoogleToken,
 } from "@/lib/googleAuth";
 import { labelToMinutes } from "@/lib/dateTime";
@@ -52,6 +53,7 @@ type GoogleColorsResponse = {
 };
 
 type StoredCalendar = {
+  google_account_id: string;
   calendar_id: string;
   summary: string;
   time_zone: string | null;
@@ -126,7 +128,7 @@ function stableLocalId(value: string) {
 
 function eventToPlan(
   event: GoogleEvent,
-  calendar: Pick<StoredCalendar, "calendar_id" | "time_zone" | "background_color">
+  calendar: Pick<StoredCalendar, "google_account_id" | "calendar_id" | "time_zone" | "background_color">
 ) {
   if (!event.id || event.status === "cancelled" || !event.start || !event.end) return null;
   const timeZone = validateTimeZone(event.start.timeZone ?? calendar.time_zone ?? undefined);
@@ -141,7 +143,7 @@ function eventToPlan(
 
   return {
     user_id: "",
-    local_id: stableLocalId(`${calendar.calendar_id}:${event.id}`),
+    local_id: stableLocalId(`${calendar.google_account_id}:${calendar.calendar_id}:${event.id}`),
     title: event.summary?.trim() || "Untitled event",
     date: start.date,
     start_label: start.label,
@@ -156,6 +158,7 @@ function eventToPlan(
     custom_recurrence: event.recurrence?.join("\n") ?? "",
     series_id: event.recurringEventId ?? null,
     excluded_dates: [],
+    google_account_id: calendar.google_account_id,
     google_event_id: event.id,
     google_calendar_id: calendar.calendar_id,
     google_recurring_event_id: event.recurringEventId ?? null,
@@ -170,6 +173,7 @@ function eventToPlan(
 
 async function setSyncState(
   userId: string,
+  accountId: string,
   state: CalendarSyncState,
   values: Record<string, unknown> = {}
 ) {
@@ -178,7 +182,8 @@ async function setSyncState(
   const { error } = await supabase
     .from("google_tokens")
     .update({ last_sync_status: state, ...values, updated_at: new Date().toISOString() })
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .eq("id", accountId);
   if (error) {
     console.error(JSON.stringify({
       service: "google-calendar-sync",
@@ -190,11 +195,12 @@ async function setSyncState(
 
 async function googleRequest<T>(
   userId: string,
+  accountId: string,
   url: string,
   init: RequestInit = {},
   forceRefresh = false
 ): Promise<{ response: Response; body: T }> {
-  const accessToken = await getGoogleAccessToken(userId, forceRefresh);
+  const accessToken = await getGoogleAccessToken(userId, accountId, forceRefresh);
   let response: Response;
   try {
     response = await fetch(url, {
@@ -213,7 +219,7 @@ async function googleRequest<T>(
     );
   }
   if (response.status === 401 && !forceRefresh) {
-    return googleRequest<T>(userId, url, init, true);
+    return googleRequest<T>(userId, accountId, url, init, true);
   }
   const body = response.status === 204
     ? ({} as T)
@@ -229,7 +235,7 @@ async function googleRequest<T>(
   return { response, body };
 }
 
-async function fetchCalendars(userId: string) {
+async function fetchCalendars(userId: string, accountId: string) {
   const calendars: GoogleCalendar[] = [];
   let pageToken = "";
   let listSyncToken: string | undefined;
@@ -238,6 +244,7 @@ async function fetchCalendars(userId: string) {
     if (pageToken) params.set("pageToken", pageToken);
     const { body } = await googleRequest<GoogleListResponse<GoogleCalendar>>(
       userId,
+      accountId,
       `https://www.googleapis.com/calendar/v3/users/me/calendarList?${params}`
     );
     calendars.push(
@@ -251,9 +258,10 @@ async function fetchCalendars(userId: string) {
   return { calendars, listSyncToken };
 }
 
-async function fetchEventColors(userId: string) {
+async function fetchEventColors(userId: string, accountId: string) {
   const { body } = await googleRequest<GoogleColorsResponse>(
     userId,
+    accountId,
     "https://www.googleapis.com/calendar/v3/colors"
   );
   return body.event ?? {};
@@ -261,6 +269,7 @@ async function fetchEventColors(userId: string) {
 
 async function fetchCalendarEvents(
   userId: string,
+  accountId: string,
   calendar: StoredCalendar,
   timeZone: string,
   runId: string,
@@ -289,6 +298,7 @@ async function fetchCalendarEvents(
     try {
       const { body } = await googleRequest<GoogleListResponse<GoogleEvent>>(
         userId,
+        accountId,
         `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.calendar_id)}/events?${params}`
       );
       events.push(...(body.items ?? []));
@@ -301,6 +311,7 @@ async function fetchCalendarEvents(
         });
         return fetchCalendarEvents(
           userId,
+          accountId,
           { ...calendar, sync_token: null },
           timeZone,
           runId,
@@ -319,7 +330,7 @@ async function fetchCalendarEvents(
   return { events, nextSyncToken: nextSyncToken ?? null, incremental };
 }
 
-async function storeCalendars(userId: string, calendars: GoogleCalendar[]) {
+async function storeCalendars(userId: string, accountId: string, calendars: GoogleCalendar[]) {
   const supabase = getServiceSupabaseClient();
   if (!supabase) {
     throw new CalendarSyncError("misconfigured", "A Supabase server key is not configured");
@@ -327,7 +338,8 @@ async function storeCalendars(userId: string, calendars: GoogleCalendar[]) {
   const { data: existing, error: existingError } = await supabase
     .from("google_calendars")
     .select("calendar_id,sync_token")
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .eq("google_account_id", accountId);
   if (existingError) {
     throw new CalendarSyncError(
       "error",
@@ -342,6 +354,7 @@ async function storeCalendars(userId: string, calendars: GoogleCalendar[]) {
   );
   const rows = calendars.map((calendar) => ({
     user_id: userId,
+    google_account_id: accountId,
     calendar_id: calendar.id,
     summary: calendar.summary?.trim() || "Calendar",
     description: calendar.description ?? null,
@@ -358,7 +371,7 @@ async function storeCalendars(userId: string, calendars: GoogleCalendar[]) {
   if (rows.length > 0) {
     const { error } = await supabase
       .from("google_calendars")
-      .upsert(rows, { onConflict: "user_id,calendar_id" });
+      .upsert(rows, { onConflict: "google_account_id,calendar_id" });
     if (error) {
       throw new CalendarSyncError(
         "error",
@@ -376,6 +389,7 @@ async function storeCalendars(userId: string, calendars: GoogleCalendar[]) {
       .from("plans")
       .delete()
       .eq("user_id", userId)
+      .eq("google_account_id", accountId)
       .eq("google_calendar_id", calendarId);
     if (planError) {
       throw new CalendarSyncError(
@@ -387,6 +401,7 @@ async function storeCalendars(userId: string, calendars: GoogleCalendar[]) {
       .from("google_calendars")
       .delete()
       .eq("user_id", userId)
+      .eq("google_account_id", accountId)
       .eq("calendar_id", calendarId);
     if (calendarError) {
       throw new CalendarSyncError(
@@ -409,7 +424,13 @@ async function syncOneCalendar(
   if (!supabase) {
     throw new CalendarSyncError("misconfigured", "A Supabase server key is not configured");
   }
-  const result = await fetchCalendarEvents(userId, calendar, timeZone, runId);
+  const result = await fetchCalendarEvents(
+    userId,
+    calendar.google_account_id,
+    calendar,
+    timeZone,
+    runId
+  );
   const activeRows = result.events
     .filter((event) => event.status !== "cancelled")
     .map((event) => {
@@ -424,7 +445,7 @@ async function syncOneCalendar(
 
   if (activeRows.length > 0) {
     const { error } = await supabase.from("plans").upsert(activeRows, {
-      onConflict: "user_id,google_calendar_id,google_event_id",
+      onConflict: "user_id,google_account_id,google_calendar_id,google_event_id",
     });
     if (error) {
       throw new CalendarSyncError(
@@ -442,6 +463,7 @@ async function syncOneCalendar(
       .from("plans")
       .delete()
       .eq("user_id", userId)
+      .eq("google_account_id", calendar.google_account_id)
       .eq("google_calendar_id", calendar.calendar_id)
       .in("google_event_id", cancelledIds);
     if (error) {
@@ -458,6 +480,7 @@ async function syncOneCalendar(
       .from("plans")
       .select("local_id,google_event_id")
       .eq("user_id", userId)
+      .eq("google_account_id", calendar.google_account_id)
       .eq("google_calendar_id", calendar.calendar_id)
       .eq("source", "google");
     if (existingError) {
@@ -496,6 +519,7 @@ async function syncOneCalendar(
       updated_at: new Date().toISOString(),
     })
     .eq("user_id", userId)
+    .eq("google_account_id", calendar.google_account_id)
     .eq("calendar_id", calendar.calendar_id);
   if (metadataError) {
     throw new CalendarSyncError(
@@ -507,16 +531,19 @@ async function syncOneCalendar(
 }
 
 async function readCalendarSummaries(
-  userId: string
+  userId: string,
+  accountId?: string
 ): Promise<GoogleCalendarSummary[]> {
   const supabase = getServiceSupabaseClient();
   if (!supabase) return [];
-  const { data } = await supabase
+  let query = supabase
     .from("google_calendars")
     .select("calendar_id,summary,background_color,access_role,is_primary")
     .eq("user_id", userId)
     .order("is_primary", { ascending: false })
     .order("summary");
+  if (accountId) query = query.eq("google_account_id", accountId);
+  const { data } = await query;
   return (data ?? []).map((calendar) => ({
     id: String(calendar.calendar_id),
     name: String(calendar.summary),
@@ -540,31 +567,28 @@ export async function getCalendarSyncStatus(
       timeZone: null,
       connectedEmail: null,
       calendars: [],
+      accounts: [],
     };
   }
-
-  const supabase = getServiceSupabaseClient();
-  if (!supabase) throw new Error("A Supabase server key is not configured");
-  const { data, error } = await supabase
-    .from("google_tokens")
-    .select(
-      "scope,last_sync_status,last_sync_error,last_successful_sync_at,last_sync_attempt_at,calendar_time_zone,connected_email"
-    )
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (error) {
+  let records;
+  try {
+    records = await listGoogleAccounts(userId);
+  } catch (error) {
     return {
       state: "misconfigured",
       connected: false,
       lastSuccessfulSyncAt: null,
       lastAttemptAt: null,
-      error: `Calendar sync database migration is missing: ${error.message}`,
+      error: `Calendar sync database migration is missing: ${
+        error instanceof Error ? error.message : "Unknown database error"
+      }`,
       timeZone: null,
       connectedEmail: null,
       calendars: [],
+      accounts: [],
     };
   }
-  if (!data) {
+  if (records.length === 0) {
     return {
       state: "not_connected",
       connected: false,
@@ -574,73 +598,104 @@ export async function getCalendarSyncStatus(
       timeZone: null,
       connectedEmail: null,
       calendars: [],
+      accounts: [],
     };
   }
-  const scopes = String(data.scope ?? "").split(/\s+/);
-  if (!scopes.includes("https://www.googleapis.com/auth/calendar")) {
+  const calendars = await readCalendarSummaries(userId);
+  const counts = new Map<string, number>();
+  const supabase = getServiceSupabaseClient();
+  const { data: calendarAccounts } = await supabase!
+    .from("google_calendars")
+    .select("google_account_id")
+    .eq("user_id", userId);
+  for (const row of calendarAccounts ?? []) {
+    const id = String(row.google_account_id);
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  const accounts = records.map((record) => {
+    const scopes = String(record.scope ?? "").split(/\s+/);
+    const hasRequiredScopes =
+      scopes.includes("https://www.googleapis.com/auth/calendar") &&
+      scopes.includes("https://www.googleapis.com/auth/gmail.readonly");
     return {
-      state: "auth_expired",
-      connected: true,
-      lastSuccessfulSyncAt: data.last_successful_sync_at
-        ? String(data.last_successful_sync_at)
+      id: String(record.id),
+      email: String(record.connected_email ?? "Google account"),
+      name: record.display_name ? String(record.display_name) : null,
+      avatarUrl: record.avatar_url ? String(record.avatar_url) : null,
+      color: record.account_color ? String(record.account_color) : null,
+      state: hasRequiredScopes
+        ? ((record.last_sync_status as CalendarSyncState) || "ready")
+        : ("auth_expired" as const),
+      lastSuccessfulSyncAt: record.last_successful_sync_at
+        ? String(record.last_successful_sync_at)
         : null,
-      lastAttemptAt: data.last_sync_attempt_at
-        ? String(data.last_sync_attempt_at)
+      lastEmailSyncAt: record.last_email_sync_at
+        ? String(record.last_email_sync_at)
         : null,
-      error: "Reconnect Google Calendar to approve multi-calendar editing.",
-      timeZone: data.calendar_time_zone ? String(data.calendar_time_zone) : null,
-      connectedEmail: data.connected_email ? String(data.connected_email) : null,
-      calendars: await readCalendarSummaries(userId),
+      error: hasRequiredScopes
+        ? record.last_sync_error
+          ? String(record.last_sync_error)
+          : null
+        : "Reconnect to approve calendar and Gmail access.",
+      calendarCount: counts.get(String(record.id)) ?? 0,
     };
-  }
+  });
+  const failures = accounts.filter((account) =>
+    ["auth_expired", "unreachable", "misconfigured", "error"].includes(account.state)
+  );
+  const newestSync = accounts
+    .map((account) => account.lastSuccessfulSyncAt)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1) ?? null;
   return {
-    state: (data.last_sync_status as CalendarSyncState) || "ready",
+    state: failures[0]?.state ?? (newestSync ? "synced" : "ready"),
     connected: true,
-    lastSuccessfulSyncAt: data.last_successful_sync_at
-      ? String(data.last_successful_sync_at)
+    lastSuccessfulSyncAt: newestSync,
+    lastAttemptAt: null,
+    error: failures[0]?.error ?? null,
+    timeZone: records[0]?.calendar_time_zone
+      ? String(records[0].calendar_time_zone)
       : null,
-    lastAttemptAt: data.last_sync_attempt_at
-      ? String(data.last_sync_attempt_at)
-      : null,
-    error: data.last_sync_error ? String(data.last_sync_error) : null,
-    timeZone: data.calendar_time_zone ? String(data.calendar_time_zone) : null,
-    connectedEmail: data.connected_email ? String(data.connected_email) : null,
-    calendars: await readCalendarSummaries(userId),
+    connectedEmail:
+      accounts.length === 1 ? accounts[0].email : `${accounts.length} Google accounts`,
+    calendars,
+    accounts,
   };
 }
 
-export async function syncGoogleCalendarForUser(
+async function syncGoogleCalendarAccount(
   userId: string,
+  accountId: string,
   requestedTimeZone?: string
-): Promise<CalendarSyncStatus> {
+) {
   const runId = randomUUID();
   const timeZone = validateTimeZone(requestedTimeZone);
   const attemptedAt = new Date().toISOString();
-  const previousStatus = await getCalendarSyncStatus(userId).catch(() => null);
-  logSync(runId, "started", { user: userId.slice(0, 8), timeZone });
+  logSync(runId, "started", { user: userId.slice(0, 8), account: accountId.slice(0, 8), timeZone });
 
   try {
-    const token = await readStoredGoogleToken(userId);
+    const token = await readStoredGoogleToken(userId, accountId);
     if (!token) {
       throw new CalendarSyncError(
         "not_connected",
         "Google Calendar is not connected."
       );
     }
-    await setSyncState(userId, "syncing", {
+    await setSyncState(userId, accountId, "syncing", {
       last_sync_attempt_at: attemptedAt,
       last_sync_error: null,
       calendar_time_zone: timeZone,
     });
 
     const [{ calendars, listSyncToken }, eventColors] = await Promise.all([
-      fetchCalendars(userId),
-      fetchEventColors(userId),
+      fetchCalendars(userId, accountId),
+      fetchEventColors(userId, accountId),
     ]);
     if (calendars.length === 0) {
       throw new CalendarSyncError("error", "Google returned no readable calendars.");
     }
-    const stored = await storeCalendars(userId, calendars);
+    const stored = await storeCalendars(userId, accountId, calendars);
     const primary = calendars.find((calendar) => calendar.primary);
     const connectedEmail = primary?.id.includes("@") ? primary.id : null;
     const totals = { imported: 0, removed: 0 };
@@ -657,12 +712,12 @@ export async function syncGoogleCalendarForUser(
     }
 
     const completedAt = new Date().toISOString();
-    await setSyncState(userId, "synced", {
+    await setSyncState(userId, accountId, "synced", {
       last_successful_sync_at: completedAt,
       last_sync_attempt_at: attemptedAt,
       last_sync_error: null,
       calendar_time_zone: timeZone,
-      connected_email: connectedEmail,
+      connected_email: token.email ?? connectedEmail,
       calendar_list_sync_token: listSyncToken ?? null,
     });
     const supabase = getServiceSupabaseClient();
@@ -678,17 +733,7 @@ export async function syncGoogleCalendarForUser(
       imported: totals.imported,
       removed: totals.removed,
     });
-    return {
-      state: "synced",
-      connected: true,
-      lastSuccessfulSyncAt: completedAt,
-      lastAttemptAt: attemptedAt,
-      error: null,
-      timeZone,
-      eventsImported: totals.imported,
-      connectedEmail,
-      calendars: await readCalendarSummaries(userId),
-    };
+    return { state: "synced" as const, imported: totals.imported };
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unknown calendar sync failure";
@@ -709,22 +754,45 @@ export async function syncGoogleCalendarForUser(
         message,
       })
     );
-    await setSyncState(userId, state, {
+    await setSyncState(userId, accountId, state, {
       last_sync_attempt_at: attemptedAt,
       last_sync_error: message,
       calendar_time_zone: timeZone,
     });
-    return {
-      state,
-      connected: state !== "not_connected",
-      lastSuccessfulSyncAt: previousStatus?.lastSuccessfulSyncAt ?? null,
-      lastAttemptAt: attemptedAt,
-      error: message,
-      timeZone,
-      connectedEmail: previousStatus?.connectedEmail ?? null,
-      calendars: previousStatus?.calendars ?? [],
-    };
+    return { state, imported: 0 };
   }
+}
+
+export async function syncGoogleCalendarForUser(
+  userId: string,
+  requestedTimeZone?: string,
+  onlyAccountId?: string
+): Promise<CalendarSyncStatus> {
+  const accounts = await listGoogleAccounts(userId);
+  const targets = onlyAccountId
+    ? accounts.filter((account) => String(account.id) === onlyAccountId)
+    : accounts;
+  if (targets.length === 0) return getCalendarSyncStatus(userId);
+  const results = [];
+  for (const account of targets) {
+    results.push(
+      await syncGoogleCalendarAccount(
+        userId,
+        String(account.id),
+        requestedTimeZone ?? String(account.calendar_time_zone ?? "UTC")
+      )
+    );
+  }
+  const status = await getCalendarSyncStatus(userId);
+  return {
+    ...status,
+    // A newly authorized account should complete its own callback even if a
+    // different connected account currently needs reauthorization.
+    ...(onlyAccountId && results.every((result) => result.state === "synced")
+      ? { state: "synced" as const, error: null }
+      : {}),
+    eventsImported: results.reduce((total, result) => total + result.imported, 0),
+  };
 }
 
 function clockValue(label: string) {
@@ -772,18 +840,23 @@ function googleEventBody(plan: SavedPlan, timeZone: string) {
   };
 }
 
-async function writableCalendar(userId: string, requested?: string) {
+async function writableCalendar(
+  userId: string,
+  requested?: string,
+  requestedAccountId?: string
+) {
   const supabase = getServiceSupabaseClient();
   if (!supabase) {
     throw new CalendarSyncError("misconfigured", "A Supabase server key is not configured");
   }
   let query = supabase
     .from("google_calendars")
-    .select("calendar_id,access_role,time_zone")
+    .select("google_account_id,calendar_id,access_role,time_zone")
     .eq("user_id", userId);
+  if (requestedAccountId) query = query.eq("google_account_id", requestedAccountId);
   query = requested
     ? query.eq("calendar_id", requested)
-    : query.eq("is_primary", true);
+    : query.eq("is_primary", true).order("updated_at", { ascending: false }).limit(1);
   const { data, error } = await query.maybeSingle();
   if (error) {
     throw new CalendarSyncError(
@@ -795,6 +868,7 @@ async function writableCalendar(userId: string, requested?: string) {
     throw new CalendarSyncError("error", "The selected Google calendar is read-only.");
   }
   return {
+    accountId: String(data.google_account_id),
     id: String(data.calendar_id),
     timeZone: validateTimeZone(
       data.time_zone ? String(data.time_zone) : undefined
@@ -806,9 +880,14 @@ export async function createGoogleCalendarEvent(
   userId: string,
   plan: SavedPlan
 ) {
-  const calendar = await writableCalendar(userId, plan.googleCalendarId);
+  const calendar = await writableCalendar(
+    userId,
+    plan.googleCalendarId,
+    plan.googleAccountId
+  );
   await googleRequest<GoogleEvent>(
     userId,
+    calendar.accountId,
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
       calendar.id
     )}/events`,
@@ -817,7 +896,11 @@ export async function createGoogleCalendarEvent(
       body: JSON.stringify(googleEventBody(plan, calendar.timeZone)),
     }
   );
-  const status = await syncGoogleCalendarForUser(userId, calendar.timeZone);
+  const status = await syncGoogleCalendarForUser(
+    userId,
+    calendar.timeZone,
+    calendar.accountId
+  );
   const supabase = getServiceSupabaseClient();
   if (status.state === "synced" && supabase) {
     const { error } = await supabase
@@ -846,9 +929,14 @@ export async function updateGoogleCalendarEvent(
       "This event is not linked to Google Calendar."
     );
   }
-  const calendar = await writableCalendar(userId, plan.googleCalendarId);
+  const calendar = await writableCalendar(
+    userId,
+    plan.googleCalendarId,
+    plan.googleAccountId
+  );
   await googleRequest<GoogleEvent>(
     userId,
+    calendar.accountId,
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
       calendar.id
     )}/events/${encodeURIComponent(plan.googleEventId)}`,
@@ -857,21 +945,23 @@ export async function updateGoogleCalendarEvent(
       body: JSON.stringify(googleEventBody(plan, calendar.timeZone)),
     }
   );
-  return syncGoogleCalendarForUser(userId, calendar.timeZone);
+  return syncGoogleCalendarForUser(userId, calendar.timeZone, calendar.accountId);
 }
 
 export async function deleteGoogleCalendarEvent(
   userId: string,
   calendarId: string,
-  eventId: string
+  eventId: string,
+  accountId?: string
 ) {
-  await writableCalendar(userId, calendarId);
+  const calendar = await writableCalendar(userId, calendarId, accountId);
   await googleRequest<Record<string, never>>(
     userId,
+    calendar.accountId,
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
       calendarId
     )}/events/${encodeURIComponent(eventId)}`,
     { method: "DELETE" }
   );
-  return syncGoogleCalendarForUser(userId);
+  return syncGoogleCalendarForUser(userId, calendar.timeZone, calendar.accountId);
 }

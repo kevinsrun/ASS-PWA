@@ -1474,7 +1474,7 @@ export default function CalendarPage() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)]">
+            <div className="grid grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)]">
               <aside className="hidden border-r border-slate-200 bg-slate-50/80 p-4 md:block">
                 <button
                   onClick={() => setActivePanel(activePanel === "build" ? "none" : "build")}
@@ -1484,7 +1484,7 @@ export default function CalendarPage() {
                   Create
                 </button>
 
-                <div className="mt-5 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
+                <div className="mini-calendar mt-5 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
                   <div className="flex items-center justify-between">
                     <div className="font-semibold text-slate-800">
                       {monthStart.toLocaleDateString("en-US", {
@@ -1493,12 +1493,12 @@ export default function CalendarPage() {
                       })}
                     </div>
                   </div>
-                  <div className="mt-3 grid grid-cols-7 gap-1 text-center text-[11px] font-medium text-slate-400">
+                  <div className="mini-calendar__weekdays mt-3 grid grid-cols-7 gap-1 text-center text-[11px] font-medium text-slate-400">
                     {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => (
                       <div key={`${day}-${index}`}>{day}</div>
                     ))}
                   </div>
-                  <div className="mt-2 grid grid-cols-7 gap-1">
+                  <div className="mini-calendar__grid mt-2 grid grid-cols-7 gap-1">
                     {miniCalendarDays.map((day) => (
                       <button
                         key={day.key}

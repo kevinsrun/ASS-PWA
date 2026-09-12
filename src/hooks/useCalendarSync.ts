@@ -13,6 +13,7 @@ const initialStatus: CalendarSyncStatus = {
   timeZone: null,
   connectedEmail: null,
   calendars: [],
+  accounts: [],
 };
 
 export function useCalendarSync(onSynced?: () => Promise<void> | void) {

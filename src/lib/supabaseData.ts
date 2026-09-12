@@ -85,6 +85,7 @@ type PlanRow = {
   excluded_dates?: string[] | null;
   source?: SavedPlan["source"] | null;
   google_event_id?: string | null;
+  google_account_id?: string | null;
   google_calendar_id?: string | null;
   google_recurring_event_id?: string | null;
   google_color?: string | null;
@@ -195,6 +196,7 @@ export async function loadCloudSnapshot(userId: string): Promise<CloudSnapshot> 
         excludedDates: plan.excluded_dates ?? [],
         source: plan.source ?? "ass",
         googleEventId: plan.google_event_id ?? undefined,
+        googleAccountId: plan.google_account_id ?? undefined,
         googleCalendarId: plan.google_calendar_id ?? undefined,
         googleRecurringEventId: plan.google_recurring_event_id ?? undefined,
         googleColor: plan.google_color ?? undefined,
@@ -345,6 +347,7 @@ function planToRow(plan: SavedPlan) {
     excluded_dates: plan.excludedDates ?? [],
     source: plan.source ?? "ass",
     google_event_id: plan.googleEventId ?? null,
+    google_account_id: plan.googleAccountId ?? null,
     google_calendar_id: plan.googleCalendarId ?? null,
     google_recurring_event_id: plan.googleRecurringEventId ?? null,
     google_color: plan.googleColor ?? null,

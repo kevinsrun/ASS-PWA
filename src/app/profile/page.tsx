@@ -92,6 +92,33 @@ export default function ProfilePage() {
               onConnect={() => void calendarSync.connect()}
             />
           </div>
+          {calendarSync.status.accounts.map((account) => (
+            <div className="settings-row google-account-row" key={account.id}>
+              <div
+                className="google-account-avatar"
+                style={account.color ? { background: account.color } : undefined}
+                aria-hidden="true"
+              >
+                {(account.name || account.email).slice(0, 1).toUpperCase()}
+              </div>
+              <div>
+                <strong>{account.name || account.email}</strong>
+                <span>{account.email} · {account.calendarCount} calendars</span>
+              </div>
+              <span className={`google-account-state is-${account.state}`}>
+                {account.state === "synced" ? "Synced" : account.state.replace("_", " ")}
+              </span>
+            </div>
+          ))}
+          {user ? (
+            <button
+              type="button"
+              className="settings-row google-account-add"
+              onClick={() => void calendarSync.connect()}
+            >
+              Add Google account
+            </button>
+          ) : null}
         </div>
       </section>
 

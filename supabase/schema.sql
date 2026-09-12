@@ -84,6 +84,7 @@ create table if not exists public.plans (
   custom_recurrence text default '',
   series_id text,
   excluded_dates jsonb default '[]'::jsonb,
+  google_account_id uuid,
   google_event_id text,
   google_calendar_id text,
   google_recurring_event_id text,
@@ -99,20 +100,35 @@ create table if not exists public.plans (
 create table if not exists public.email_suggestions (
   id bigserial primary key,
   user_id uuid references auth.users(id) on delete cascade,
+  google_account_id uuid,
   external_id text not null,
+  message_id text,
+  thread_id text,
+  sender text,
+  received_at timestamptz,
   title text not null,
   date date,
   time text,
   duration integer default 60,
   category text default 'work',
   source text default '',
+  intelligence_type text not null default 'no_action',
+  importance text not null default 'normal',
+  action_required boolean not null default false,
+  summary text,
+  rationale text,
+  confidence numeric,
+  conflict_details jsonb not null default '[]'::jsonb,
+  recommendations jsonb not null default '[]'::jsonb,
+  processed_at timestamptz,
   status text default 'pending',
-  created_at timestamptz default now(),
-  unique(user_id, external_id)
+  created_at timestamptz default now()
 );
 
 create table if not exists public.google_tokens (
-  user_id uuid primary key references auth.users(id) on delete cascade,
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  google_subject text,
   access_token text not null,
   refresh_token text,
   scope text,
@@ -124,11 +140,19 @@ create table if not exists public.google_tokens (
   last_successful_sync_at timestamptz,
   calendar_time_zone text not null default 'UTC',
   connected_email text,
+  display_name text,
+  avatar_url text,
+  account_color text,
   calendar_list_sync_token text,
+  gmail_history_id text,
+  last_email_sync_at timestamptz,
+  email_sync_status text not null default 'ready',
+  email_sync_error text,
   updated_at timestamptz default now()
 );
 
 create table if not exists public.google_calendars (
+  google_account_id uuid not null references public.google_tokens(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   calendar_id text not null,
   summary text not null,
@@ -143,8 +167,15 @@ create table if not exists public.google_calendars (
   sync_token text,
   last_synced_at timestamptz,
   updated_at timestamptz not null default now(),
-  primary key (user_id, calendar_id)
+  primary key (google_account_id, calendar_id)
 );
+
+alter table public.plans
+  add constraint plans_google_account_id_fkey
+  foreign key (google_account_id) references public.google_tokens(id) on delete set null;
+alter table public.email_suggestions
+  add constraint email_suggestions_google_account_id_fkey
+  foreign key (google_account_id) references public.google_tokens(id) on delete cascade;
 
 create table if not exists public.cron_runs (
   id bigserial primary key,
@@ -313,6 +344,18 @@ grant usage, select on sequence public.todos_id_seq, public.habits_id_seq,
 -- No public policy is defined for cron_runs.
 
 create unique index if not exists plans_google_event_unique_idx
-  on public.plans(user_id, google_calendar_id, google_event_id);
+  on public.plans(user_id, google_account_id, google_calendar_id, google_event_id);
+create unique index if not exists google_tokens_user_subject_unique_idx
+  on public.google_tokens(user_id, google_subject)
+  where google_subject is not null;
+create unique index if not exists google_tokens_user_email_unique_idx
+  on public.google_tokens(user_id, lower(connected_email))
+  where connected_email is not null;
+create index if not exists google_tokens_sync_idx
+  on public.google_tokens(user_id, last_successful_sync_at desc);
 create index if not exists google_calendars_sync_idx
-  on public.google_calendars(user_id, is_selected, last_synced_at);
+  on public.google_calendars(user_id, google_account_id, is_selected, last_synced_at);
+create unique index if not exists email_suggestions_account_external_idx
+  on public.email_suggestions(user_id, google_account_id, external_id) nulls not distinct;
+create index if not exists email_suggestions_attention_idx
+  on public.email_suggestions(user_id, status, importance, received_at desc);

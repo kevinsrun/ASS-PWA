@@ -347,6 +347,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ? {
                 googleCalendarId: plan.googleCalendarId,
                 googleEventId: plan.googleEventId,
+                googleAccountId: plan.googleAccountId,
               }
             : plan
         ),

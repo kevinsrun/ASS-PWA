@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await supabase
     .from("google_tokens")
-    .select("user_id,calendar_time_zone");
+    .select("id,user_id,calendar_time_zone");
   if (error) {
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
@@ -32,7 +32,8 @@ export async function GET(request: NextRequest) {
         String(connection.user_id),
         connection.calendar_time_zone
           ? String(connection.calendar_time_zone)
-          : "UTC"
+          : "UTC",
+        String(connection.id)
       )
     );
   }

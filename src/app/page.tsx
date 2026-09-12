@@ -1,8 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, CalendarDays, Check, Plus } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowRight, CalendarDays, Check, Sparkles, Plus } from "lucide-react";
+import type { EmailIntelligenceItem } from "@/lib/types";
 import { useAppContext } from "@/providers/AppProvider";
+import { useAuth } from "@/providers/AuthProvider";
 
 function greeting() {
   const hour = new Date().getHours();
@@ -14,11 +17,38 @@ function greeting() {
 const rank = { high: 0, medium: 1, low: 2 } as const;
 
 export default function Home() {
-  const { todos, plans, profile, toggleTodo } = useAppContext();
+  const { todos, plans, profile, toggleTodo, reloadCloud } = useAppContext();
+  const { session } = useAuth();
+  const [insights, setInsights] = useState<EmailIntelligenceItem[]>([]);
   const today = new Date().toISOString().split("T")[0];
   const nextEvent = plans.filter((plan) => plan.date === today).sort((a, b) => a.startLabel.localeCompare(b.startLabel))[0];
   const important = todos.filter((todo) => !todo.done).sort((a, b) => rank[a.priority] - rank[b.priority]).slice(0, 2);
   const focus = important[0]?.title ?? nextEvent?.title ?? "Choose what matters most";
+
+  useEffect(() => {
+    if (!session?.access_token) return;
+    fetch("/api/intelligence/feed", {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Feed unavailable")))
+      .then((body: { items?: EmailIntelligenceItem[] }) => setInsights(body.items ?? []))
+      .catch((error) => console.error("Executive assistant feed failed:", error));
+  }, [session?.access_token]);
+
+  async function actOnInsight(id: string, action: "accept" | "dismiss") {
+    if (!session?.access_token) return;
+    const response = await fetch("/api/intelligence/feed", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ id, action }),
+    });
+    if (!response.ok) return;
+    setInsights((current) => current.filter((item) => item.id !== id));
+    if (action === "accept") await reloadCloud();
+  }
 
   return (
     <main className="now-page">
@@ -59,6 +89,28 @@ export default function Home() {
           {important.length === 0 ? <p className="quiet-empty">Nothing needs your attention.</p> : null}
         </div>
       </section>
+
+      {insights.length > 0 ? (
+        <section className="now-section assistant-brief" aria-label="Executive assistant recommendations">
+          <div className="now-section-title"><span>Assistant</span><Sparkles size={16} /></div>
+          <div className="assistant-insights">
+            {insights.slice(0, 2).map((item) => (
+              <article key={item.id} className={item.conflictDetails.length ? "has-conflict" : ""}>
+                <div className="assistant-insight-copy">
+                  <small>{item.accountEmail} · {item.type.replace("_", " ")}</small>
+                  <strong>{item.title}</strong>
+                  <p>{item.conflictDetails.length ? `Conflicts with ${item.conflictDetails.join(", ")}.` : item.summary}</p>
+                  {item.recommendations[0] ? <span>{item.recommendations[0]}</span> : null}
+                </div>
+                <div className="assistant-insight-actions">
+                  <button type="button" onClick={() => void actOnInsight(item.id, "accept")}>Accept</button>
+                  <button type="button" onClick={() => void actOnInsight(item.id, "dismiss")}>Dismiss</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }
