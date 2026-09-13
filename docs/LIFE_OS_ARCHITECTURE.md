@@ -23,6 +23,10 @@ credentials remain server-only, the caller is authenticated with a Supabase
 access token, normalized records are written to owner-scoped tables, and the same
 endpoint can be called by the web app or a native iOS client.
 
+The current release also makes calendar and email integrations multi-account.
+Google rows are source records; they are no longer assumed to be unique life
+commitments. Finance is a private planning module backed by Plaid read-only data.
+
 ## Target system
 
 ```text
@@ -32,7 +36,8 @@ SwiftUI iOS ───────┘          │
                               ├── Supabase Auth + Postgres + Storage
                               ├── Canvas LMS
                               ├── Gmail
-                              └── Google Calendar
+                              ├── Google Calendar
+                              └── Plaid (read-only)
 ```
 
 Supabase is authoritative. Local storage, SwiftData, and URL cache are offline
@@ -76,6 +81,17 @@ tokens, email suggestions, and automation runs. This release adds:
 - `academic_resources`: normalized modules, pages, announcements, files,
   discussions, and Canvas calendar events;
 - `academic_sync_runs`: observable sync outcomes and counts.
+- `connected_accounts`: one owner-scoped identity registry for every Google and
+  Plaid connection;
+- `canonical_events`: one real-world commitment after cross-calendar matching;
+- `calendar_event_sources`: every Google account/calendar/event source retained
+  for two-way writes and deletion reconciliation;
+- `calendar_sync_runs` and `sync_errors`: account/calendar-level observability;
+- `assistant_alerts`: deduplicated conflicts, merge explanations, email actions,
+  and cautious financial warnings;
+- `plaid_items`, `finance_accounts`, `finance_transactions`,
+  `finance_assumptions`, and `finance_sync_runs`: encrypted-token, server-only
+  ingestion plus owner-readable normalized financial data.
 
 All exposed tables have RLS enabled. Policies explicitly target the
 `authenticated` role and enforce `auth.uid() = user_id`; anonymous table grants
@@ -98,6 +114,52 @@ the caller's access token.
 The next API increment should extract the same authentication guard into a shared
 module and add versioned endpoints for planner mutations, Google Calendar CRUD,
 email decisions, chat streams, journal attachments, and search.
+
+Current authenticated integration endpoints are:
+
+- `GET/POST /api/calendar/*`: OAuth-backed multi-calendar reads and CRUD;
+- `POST /api/gmail/import`: per-account Gmail classification and automatic
+  action creation;
+- `GET/POST /api/intelligence/feed`: one proactive assistant queue;
+- `GET/PATCH /api/finance`: runway and user-controlled assumptions;
+- `POST /api/finance/link-token`, `/exchange`, and `/sync`: Plaid Link and
+  synchronization;
+- `POST /api/plaid/webhook`: verified Plaid transaction webhooks;
+- `GET /api/cron/sync`: the unified 15-minute calendar, Gmail, and finance job.
+
+## Calendar source and deduplication model
+
+```text
+Google account → Google calendar → calendar_event_sources
+                                      │
+                                      ├─ exact Google event ID
+                                      └─ time/title/location/description/
+                                         organizer/attendee similarity
+                                                   │
+                                                   ▼
+                                          canonical_events
+                                                   │
+                                                   ▼
+                                         one calendar plan row
+```
+
+Deduplication does not delete Google source identity. Every source remains linked
+to the canonical commitment so later updates and cancellations reconcile safely.
+Conflict detection runs only after canonicalization and compares the resulting
+Google commitments with native ASS study, class, research, workout, and task
+blocks. A successful sync resolves prior error rows for that calendar.
+
+## Background jobs and privacy
+
+Vercel invokes `/api/cron/sync` every 15 minutes. Google sync tokens and Plaid
+transaction cursors make normal jobs incremental; the first canonical migration
+forces one full Google refresh. Failures are stored at the account/calendar/run
+level and surfaced in Profile instead of disappearing into logs.
+
+Plaid access tokens are AES-256-GCM encrypted with `DATA_ENCRYPTION_KEY`, never
+sent to the browser, and the token/run tables have no authenticated client
+grants. Gemini receives only financial aggregates and planning assumptions. It
+cannot initiate transactions and is instructed not to provide investment advice.
 
 ## SwiftUI architecture
 

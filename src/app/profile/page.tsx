@@ -9,6 +9,7 @@ import {
   Github,
   LogOut,
   UserRound,
+  WalletCards,
 } from "lucide-react";
 import CalendarSyncIndicator from "@/components/CalendarSyncIndicator";
 import { useCalendarSync } from "@/hooks/useCalendarSync";
@@ -93,21 +94,32 @@ export default function ProfilePage() {
             />
           </div>
           {calendarSync.status.accounts.map((account) => (
-            <div className="settings-row google-account-row" key={account.id}>
-              <div
-                className="google-account-avatar"
-                style={account.color ? { background: account.color } : undefined}
-                aria-hidden="true"
-              >
-                {(account.name || account.email).slice(0, 1).toUpperCase()}
+            <div className="google-account-block" key={account.id}>
+              <div className="settings-row google-account-row">
+                <div
+                  className="google-account-avatar"
+                  style={account.color ? { background: account.color } : undefined}
+                  aria-hidden="true"
+                >
+                  {(account.name || account.email).slice(0, 1).toUpperCase()}
+                </div>
+                <div>
+                  <strong>{account.name || account.email}</strong>
+                  <span>{account.email} · {account.calendarCount} calendars</span>
+                </div>
+                <span className={`google-account-state is-${account.state}`}>
+                  {account.state === "synced" ? "Synced" : account.state.replace("_", " ")}
+                </span>
               </div>
-              <div>
-                <strong>{account.name || account.email}</strong>
-                <span>{account.email} · {account.calendarCount} calendars</span>
+              <div className="google-calendar-list" aria-label={`${account.email} calendars`}>
+                {calendarSync.status.calendars.filter((calendar) => calendar.accountId === account.id).map((calendar) => (
+                  <div key={`${account.id}:${calendar.id}`}>
+                    <i style={calendar.color ? { background: calendar.color } : undefined} aria-hidden="true" />
+                    <span>{calendar.name}</span>
+                    <small className={`is-${calendar.state}`}>{calendar.state === "synced" ? "Synced" : calendar.state.replace("_", " ")}</small>
+                  </div>
+                ))}
               </div>
-              <span className={`google-account-state is-${account.state}`}>
-                {account.state === "synced" ? "Synced" : account.state.replace("_", " ")}
-              </span>
             </div>
           ))}
           {user ? (
@@ -119,6 +131,11 @@ export default function ProfilePage() {
               Add Google account
             </button>
           ) : null}
+          <Link href="/finance" className="settings-row settings-row--link">
+            <WalletCards size={20} aria-hidden="true" />
+            <div><strong>Finance</strong><span>Private runway planning with Plaid</span></div>
+            <ChevronRight size={17} aria-hidden="true" />
+          </Link>
         </div>
       </section>
 

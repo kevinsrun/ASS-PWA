@@ -1517,7 +1517,8 @@ export default function CalendarPage() {
                             : "text-slate-300"
                         }`}
                       >
-                        {day.number}
+                        <span>{day.number}</span>
+                        {getVisiblePlans(plans, day.key).length > 0 ? <i aria-hidden="true" /> : null}
                       </button>
                     ))}
                   </div>

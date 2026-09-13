@@ -92,6 +92,7 @@ type PlanRow = {
   google_etag?: string | null;
   google_updated_at?: string | null;
   all_day?: boolean | null;
+  canonical_event_id?: string | null;
 };
 
 function hasCoreData(snapshot: CloudSnapshot) {
@@ -203,6 +204,7 @@ export async function loadCloudSnapshot(userId: string): Promise<CloudSnapshot> 
         googleEtag: plan.google_etag ?? undefined,
         googleUpdatedAt: plan.google_updated_at ?? undefined,
         allDay: Boolean(plan.all_day),
+        canonicalEventId: plan.canonical_event_id ?? undefined,
       })),
   };
 }
@@ -354,5 +356,6 @@ function planToRow(plan: SavedPlan) {
     google_etag: plan.googleEtag ?? null,
     google_updated_at: plan.googleUpdatedAt ?? null,
     all_day: plan.allDay ?? false,
+    canonical_event_id: plan.canonicalEventId ?? null,
   };
 }

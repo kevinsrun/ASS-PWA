@@ -164,6 +164,29 @@ async function fetchGoogleIdentity(accessToken: string) {
   };
 }
 
+async function syncConnectedAccount(
+  userId: string,
+  accountId: string,
+  identity: Awaited<ReturnType<typeof fetchGoogleIdentity>>
+) {
+  const supabase = getServiceSupabaseClient();
+  if (!supabase) throw new Error("A Supabase server key is not configured");
+  const { error } = await supabase.from("connected_accounts").upsert({
+    id: accountId,
+    user_id: userId,
+    provider: "google",
+    provider_subject: identity.sub ?? null,
+    email: identity.email ?? null,
+    display_name: identity.name ?? null,
+    avatar_url: identity.picture ?? null,
+    sync_status: "ready",
+    last_sync_error: null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "id" });
+  if (error) throw new Error(`Unable to store the connected Google account: ${error.message}`);
+  await supabase.from("google_tokens").update({ connected_account_id: accountId }).eq("id", accountId);
+}
+
 async function writeStoredToken(
   userId: string,
   token: GoogleToken,
@@ -223,6 +246,7 @@ async function writeStoredToken(
       .eq("id", accountId)
       .eq("user_id", userId);
     if (error) throw new Error(`Unable to update Google credentials: ${error.message}`);
+    await syncConnectedAccount(userId, accountId, identity);
     return accountId;
   }
   const { data, error } = await supabase.from("google_tokens").insert({
@@ -232,7 +256,9 @@ async function writeStoredToken(
   if (error) {
     throw new Error(`Unable to store Google credentials: ${error.message}`);
   }
-  return String(data.id);
+  const insertedId = String(data.id);
+  await syncConnectedAccount(userId, insertedId, identity);
+  return insertedId;
 }
 
 export async function exchangeGoogleCode(code: string, userId: string) {

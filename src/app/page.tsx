@@ -95,9 +95,9 @@ export default function Home() {
           <div className="now-section-title"><span>Assistant</span><Sparkles size={16} /></div>
           <div className="assistant-insights">
             {insights.slice(0, 2).map((item) => (
-              <article key={item.id} className={item.conflictDetails.length ? "has-conflict" : ""}>
+              <article key={item.id} className={item.type === "calendar_conflict" || item.conflictDetails.length ? "has-conflict" : ""}>
                 <div className="assistant-insight-copy">
-                  <small>{item.accountEmail} · {item.type.replace("_", " ")}</small>
+                  <small>{item.accountEmail} · {item.type.replaceAll("_", " ")}</small>
                   <strong>{item.title}</strong>
                   <p>{item.conflictDetails.length ? `Conflicts with ${item.conflictDetails.join(", ")}.` : item.summary}</p>
                   {item.recommendations[0] ? <span>{item.recommendations[0]}</span> : null}

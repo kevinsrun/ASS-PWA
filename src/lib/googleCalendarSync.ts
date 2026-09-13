@@ -7,6 +7,14 @@ import {
 } from "@/lib/googleAuth";
 import { labelToMinutes } from "@/lib/dateTime";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
+import {
+  detectCalendarConflicts,
+  reconcileCalendarSources,
+  recordSyncError,
+  removeCanonicalSources,
+  upsertCanonicalEvent,
+  type CanonicalGoogleEvent,
+} from "@/lib/calendarCanonical";
 import type {
   CalendarSyncState,
   CalendarSyncStatus,
@@ -27,19 +35,9 @@ type GoogleCalendar = {
   hidden?: boolean;
 };
 
-type GoogleEvent = {
-  id?: string;
-  etag?: string;
-  status?: string;
-  summary?: string;
-  description?: string;
-  location?: string;
+type GoogleEvent = Partial<CanonicalGoogleEvent> & {
   colorId?: string;
-  updated?: string;
   recurrence?: string[];
-  recurringEventId?: string;
-  start?: { date?: string; dateTime?: string; timeZone?: string };
-  end?: { date?: string; dateTime?: string; timeZone?: string };
 };
 
 type GoogleListResponse<T> = {
@@ -80,6 +78,14 @@ class CalendarSyncError extends Error {
 
 function logSync(runId: string, stage: string, details: Record<string, unknown> = {}) {
   console.info(JSON.stringify({ service: "google-calendar-sync", runId, stage, ...details }));
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message?: unknown }).message || fallback);
+  }
+  return fallback;
 }
 
 function validateTimeZone(timeZone: string | undefined) {
@@ -191,6 +197,12 @@ async function setSyncState(
       message: error.message,
     }));
   }
+  await supabase.from("connected_accounts").update({
+    sync_status: state,
+    last_successful_sync_at: values.last_successful_sync_at ?? undefined,
+    last_sync_error: values.last_sync_error ?? null,
+    updated_at: new Date().toISOString(),
+  }).eq("id", accountId).eq("user_id", userId);
 }
 
 async function googleRequest<T>(
@@ -385,6 +397,12 @@ async function storeCalendars(userId: string, accountId: string, calendars: Goog
     .map((row) => String(row.calendar_id))
     .filter((id) => !currentIds.has(id));
   for (const calendarId of removed) {
+    await reconcileCalendarSources({
+      userId,
+      accountId,
+      calendarId,
+      activeEventIds: [],
+    });
     const { error: planError } = await supabase
       .from("plans")
       .delete()
@@ -424,110 +442,117 @@ async function syncOneCalendar(
   if (!supabase) {
     throw new CalendarSyncError("misconfigured", "A Supabase server key is not configured");
   }
-  const result = await fetchCalendarEvents(
-    userId,
-    calendar.google_account_id,
-    calendar,
-    timeZone,
-    runId
-  );
-  const activeRows = result.events
-    .filter((event) => event.status !== "cancelled")
-    .map((event) => {
-      const row = eventToPlan(event, calendar);
-      if (row && event.colorId && eventColors[event.colorId]?.background) {
-        row.google_color = eventColors[event.colorId].background ?? row.google_color;
-      }
-      return row;
-    })
-    .filter((row): row is NonNullable<typeof row> => row !== null)
-    .map((row) => ({ ...row, user_id: userId }));
+  const startedAt = new Date().toISOString();
+  const { data: syncRun, error: runError } = await supabase.from("calendar_sync_runs").insert({
+    user_id: userId,
+    google_account_id: calendar.google_account_id,
+    calendar_id: calendar.calendar_id,
+    status: "running",
+    started_at: startedAt,
+  }).select("id").single();
+  if (runError) throw new CalendarSyncError("error", `Unable to start calendar sync log: ${runError.message}`);
+  await supabase.from("google_calendars").update({
+    last_sync_status: "syncing",
+    last_sync_error: null,
+    updated_at: startedAt,
+  }).eq("google_account_id", calendar.google_account_id).eq("calendar_id", calendar.calendar_id);
 
-  if (activeRows.length > 0) {
-    const { error } = await supabase.from("plans").upsert(activeRows, {
-      onConflict: "user_id,google_account_id,google_calendar_id,google_event_id",
-    });
-    if (error) {
-      throw new CalendarSyncError(
-        "error",
-        `Unable to save calendar events: ${error.message}`
-      );
-    }
-  }
-
-  const cancelledIds = result.events
-    .filter((event) => event.status === "cancelled" && event.id)
-    .map((event) => event.id!);
-  if (cancelledIds.length > 0) {
-    const { error } = await supabase
-      .from("plans")
-      .delete()
-      .eq("user_id", userId)
-      .eq("google_account_id", calendar.google_account_id)
-      .eq("google_calendar_id", calendar.calendar_id)
-      .in("google_event_id", cancelledIds);
-    if (error) {
-      throw new CalendarSyncError(
-        "error",
-        `Unable to remove deleted events: ${error.message}`
-      );
-    }
-  }
-
-  let removed = cancelledIds.length;
-  if (!result.incremental) {
-    const { data: existing, error: existingError } = await supabase
-      .from("plans")
-      .select("local_id,google_event_id")
-      .eq("user_id", userId)
-      .eq("google_account_id", calendar.google_account_id)
-      .eq("google_calendar_id", calendar.calendar_id)
-      .eq("source", "google");
-    if (existingError) {
-      throw new CalendarSyncError(
-        "error",
-        `Unable to compare calendar events: ${existingError.message}`
-      );
-    }
-    const currentIds = new Set(activeRows.map((row) => row.google_event_id));
-    const staleLocalIds = (existing ?? [])
-      .filter(
-        (row) => row.google_event_id && !currentIds.has(String(row.google_event_id))
-      )
-      .map((row) => Number(row.local_id));
-    if (staleLocalIds.length > 0) {
-      const { error } = await supabase
-        .from("plans")
+  try {
+    const result = await fetchCalendarEvents(
+      userId,
+      calendar.google_account_id,
+      calendar,
+      timeZone,
+      runId
+    );
+    const active = result.events.filter(
+      (event): event is CanonicalGoogleEvent & { colorId?: string } =>
+        event.status !== "cancelled" && Boolean(event.id && event.start && event.end)
+    );
+    if (!result.incremental) {
+      const { error: legacyError } = await supabase.from("plans")
         .delete()
         .eq("user_id", userId)
-        .in("local_id", staleLocalIds);
-      if (error) {
-        throw new CalendarSyncError(
-          "error",
-          `Unable to remove stale events: ${error.message}`
-        );
-      }
+        .eq("source", "google")
+        .eq("google_account_id", calendar.google_account_id)
+        .eq("google_calendar_id", calendar.calendar_id)
+        .is("canonical_event_id", null);
+      if (legacyError) throw legacyError;
     }
-    removed += staleLocalIds.length;
-  }
+    let duplicatesMerged = 0;
+    for (const event of active) {
+      const row = eventToPlan(event, calendar);
+      if (!row) continue;
+      if (event.colorId && eventColors[event.colorId]?.background) {
+        row.google_color = eventColors[event.colorId].background ?? row.google_color;
+      }
+      const canonical = await upsertCanonicalEvent({
+        userId,
+        accountId: calendar.google_account_id,
+        calendarId: calendar.calendar_id,
+        event,
+        plan: row,
+      });
+      if (canonical.duplicateMerged) duplicatesMerged += 1;
+    }
 
-  const { error: metadataError } = await supabase
-    .from("google_calendars")
-    .update({
-      sync_token: result.nextSyncToken,
-      last_synced_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("user_id", userId)
-    .eq("google_account_id", calendar.google_account_id)
-    .eq("calendar_id", calendar.calendar_id);
-  if (metadataError) {
-    throw new CalendarSyncError(
-      "error",
-      `Unable to store calendar sync token: ${metadataError.message}`
-    );
+    const cancelledIds = result.events
+      .filter((event) => event.status === "cancelled" && event.id)
+      .map((event) => String(event.id));
+    let removed = await removeCanonicalSources({
+      userId,
+      accountId: calendar.google_account_id,
+      calendarId: calendar.calendar_id,
+      eventIds: cancelledIds,
+    });
+    if (!result.incremental) {
+      removed += await reconcileCalendarSources({
+        userId,
+        accountId: calendar.google_account_id,
+        calendarId: calendar.calendar_id,
+        activeEventIds: active.map((event) => event.id),
+      });
+    }
+
+    const completedAt = new Date().toISOString();
+    const { error: metadataError } = await supabase
+      .from("google_calendars")
+      .update({
+        sync_token: result.nextSyncToken,
+        last_synced_at: completedAt,
+        last_sync_status: "synced",
+        last_sync_error: null,
+        last_successful_sync_at: completedAt,
+        updated_at: completedAt,
+      })
+      .eq("user_id", userId)
+      .eq("google_account_id", calendar.google_account_id)
+      .eq("calendar_id", calendar.calendar_id);
+    if (metadataError) throw metadataError;
+    await supabase.from("calendar_sync_runs").update({
+      status: "ok",
+      fetched: result.events.length,
+      canonical_events: active.length,
+      duplicates_merged: duplicatesMerged,
+      removed,
+      completed_at: completedAt,
+    }).eq("id", syncRun.id);
+    await supabase.from("sync_errors").update({ resolved_at: completedAt })
+      .eq("user_id", userId)
+      .eq("service", "google-calendar")
+      .eq("calendar_id", calendar.calendar_id)
+      .is("resolved_at", null);
+    return { imported: active.length, removed, duplicatesMerged };
+  } catch (error) {
+    const message = errorMessage(error, "Unknown calendar failure");
+    const completedAt = new Date().toISOString();
+    await Promise.all([
+      supabase.from("calendar_sync_runs").update({ status: "error", error_message: message, completed_at: completedAt }).eq("id", syncRun.id),
+      supabase.from("google_calendars").update({ last_sync_status: "error", last_sync_error: message, updated_at: completedAt }).eq("google_account_id", calendar.google_account_id).eq("calendar_id", calendar.calendar_id),
+      recordSyncError({ userId, accountId: calendar.google_account_id, calendarId: calendar.calendar_id, service: "google-calendar", message }),
+    ]);
+    throw error;
   }
-  return { imported: activeRows.length, removed };
 }
 
 async function readCalendarSummaries(
@@ -538,7 +563,7 @@ async function readCalendarSummaries(
   if (!supabase) return [];
   let query = supabase
     .from("google_calendars")
-    .select("calendar_id,summary,background_color,access_role,is_primary")
+    .select("google_account_id,calendar_id,summary,background_color,access_role,is_primary,last_sync_status,last_sync_error,last_successful_sync_at")
     .eq("user_id", userId)
     .order("is_primary", { ascending: false })
     .order("summary");
@@ -546,10 +571,14 @@ async function readCalendarSummaries(
   const { data } = await query;
   return (data ?? []).map((calendar) => ({
     id: String(calendar.calendar_id),
+    accountId: String(calendar.google_account_id),
     name: String(calendar.summary),
     color: calendar.background_color ? String(calendar.background_color) : null,
     accessRole: String(calendar.access_role),
     primary: Boolean(calendar.is_primary),
+    state: (calendar.last_sync_status as CalendarSyncState) || "ready",
+    lastSuccessfulSyncAt: calendar.last_successful_sync_at ? String(calendar.last_successful_sync_at) : null,
+    error: calendar.last_sync_error ? String(calendar.last_sync_error) : null,
   }));
 }
 
@@ -580,7 +609,7 @@ export async function getCalendarSyncStatus(
       lastSuccessfulSyncAt: null,
       lastAttemptAt: null,
       error: `Calendar sync database migration is missing: ${
-        error instanceof Error ? error.message : "Unknown database error"
+        errorMessage(error, "Unknown database error")
       }`,
       timeZone: null,
       connectedEmail: null,
@@ -698,7 +727,7 @@ async function syncGoogleCalendarAccount(
     const stored = await storeCalendars(userId, accountId, calendars);
     const primary = calendars.find((calendar) => calendar.primary);
     const connectedEmail = primary?.id.includes("@") ? primary.id : null;
-    const totals = { imported: 0, removed: 0 };
+    const totals = { imported: 0, removed: 0, duplicatesMerged: 0 };
     for (const calendar of stored) {
       const result = await syncOneCalendar(
         userId,
@@ -709,6 +738,7 @@ async function syncGoogleCalendarAccount(
       );
       totals.imported += result.imported;
       totals.removed += result.removed;
+      totals.duplicatesMerged += result.duplicatesMerged;
     }
 
     const completedAt = new Date().toISOString();
@@ -721,8 +751,30 @@ async function syncGoogleCalendarAccount(
       calendar_list_sync_token: listSyncToken ?? null,
     });
     const supabase = getServiceSupabaseClient();
+    if (!supabase) throw new CalendarSyncError("misconfigured", "A Supabase server key is not configured");
+    if (totals.duplicatesMerged > 0) {
+      const day = completedAt.slice(0, 10);
+      const { error: mergeAlertError } = await supabase.from("assistant_alerts").upsert({
+        user_id: userId,
+        dedupe_key: `calendar-merge-summary:${accountId}:${day}`,
+        kind: "calendar_merge",
+        severity: "normal",
+        title: `${totals.duplicatesMerged} duplicate calendar events merged`,
+        summary: "ASS kept one commitment for each real event while retaining every Google source for safe updates and cancellations.",
+        status: "pending",
+        updated_at: completedAt,
+      }, { onConflict: "user_id,dedupe_key" });
+      if (mergeAlertError) console.error(JSON.stringify({ service: "google-calendar-sync", runId, stage: "merge_alert_failed", message: mergeAlertError.message }));
+    }
+    const { error: orphanLegacyError } = await supabase.from("plans")
+      .delete()
+      .eq("user_id", userId)
+      .eq("source", "google")
+      .is("google_account_id", null)
+      .is("canonical_event_id", null);
+    if (orphanLegacyError) throw orphanLegacyError;
     await supabase
-      ?.from("profiles")
+      .from("profiles")
       .upsert({
         user_id: userId,
         gmail_connected: true,
@@ -732,11 +784,11 @@ async function syncGoogleCalendarAccount(
       calendars: stored.length,
       imported: totals.imported,
       removed: totals.removed,
+      duplicatesMerged: totals.duplicatesMerged,
     });
     return { state: "synced" as const, imported: totals.imported };
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unknown calendar sync failure";
+    const message = errorMessage(error, "Unknown calendar sync failure");
     const state =
       error instanceof CalendarSyncError
         ? error.state
@@ -783,6 +835,7 @@ export async function syncGoogleCalendarForUser(
       )
     );
   }
+  await detectCalendarConflicts(userId);
   const status = await getCalendarSyncStatus(userId);
   return {
     ...status,

@@ -1,5 +1,6 @@
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
+import { addMinutesToLabel, formatTimeLabel } from "@/lib/dateTime";
 import { getGoogleAccessToken, listGoogleAccounts } from "@/lib/googleAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import type { EmailIntelligenceItem, PlanCategory } from "@/lib/types";
@@ -160,6 +161,10 @@ function minutes(value: string) {
   return hour * 60 + minute;
 }
 
+function stableEmailId(accountId: string, messageId: string, kind: string) {
+  return 6_000_000_000 + createHash("sha256").update(`${accountId}:${messageId}:${kind}`).digest().readUInt32BE(0);
+}
+
 function conflictAnalysis(
   item: Classification,
   plans: Array<{ title: string; date: string; start_label: string; end_label: string; priority: string }>
@@ -271,6 +276,63 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
       if (rows.length > 0) {
         const { error } = await supabase.from("email_suggestions").upsert(rows, { onConflict: "user_id,google_account_id,external_id" });
         if (error) throw error;
+        const actionable = rows.filter((row) => row.action_required && row.confidence >= 0.82 && row.intelligence_type !== "no_action");
+        const taskTypes = new Set(["task", "deadline", "reminder", "financial_aid", "invoice", "scholarship", "research", "project_update"]);
+        const taskRows = actionable.filter((row) => taskTypes.has(row.intelligence_type)).map((row) => ({
+          user_id: userId,
+          local_id: stableEmailId(accountId, row.external_id, "task"),
+          title: row.title,
+          done: false,
+          priority: row.importance === "urgent" || row.importance === "high" ? "high" : "medium",
+          duration: row.duration,
+          due_date: row.date,
+          tags: [row.intelligence_type, "email", String(account.connected_email ?? "google")],
+          recurrence: "none",
+          subtasks: [],
+          updated_at: processedAt,
+        }));
+        if (taskRows.length) {
+          const { error } = await supabase.from("todos").upsert(taskRows, { onConflict: "user_id,local_id" });
+          if (error) throw error;
+        }
+        const deadlinePlans = actionable
+          .filter((row) => row.date && ["deadline", "financial_aid", "invoice"].includes(row.intelligence_type))
+          .map((row) => ({
+            user_id: userId,
+            local_id: stableEmailId(accountId, row.external_id, "deadline"),
+            title: row.title,
+            date: row.date,
+            start_label: row.time ? formatTimeLabel(row.time) : "12:00 AM",
+            end_label: row.time ? addMinutesToLabel(row.time, Math.max(15, row.duration)) : "11:59 PM",
+            recurrence: "none",
+            category: row.category,
+            priority: row.importance === "urgent" || row.importance === "high" ? "high" : "medium",
+            notes: row.summary,
+            source: "ass",
+            all_day: !row.time,
+            updated_at: processedAt,
+          }));
+        if (deadlinePlans.length) {
+          const { error } = await supabase.from("plans").upsert(deadlinePlans, { onConflict: "user_id,local_id" });
+          if (error) throw error;
+        }
+        const alertRows = actionable.map((row) => ({
+          user_id: userId,
+          dedupe_key: `email:${accountId}:${row.external_id}`,
+          kind: `email_${row.intelligence_type}`,
+          severity: row.importance === "urgent" ? "urgent" : row.importance === "high" ? "high" : "normal",
+          title: row.title,
+          summary: row.summary,
+          recommendation: row.recommendations[0] ?? (row.date ? `Complete by ${row.date}.` : "Review this email and decide the next action."),
+          action_type: taskTypes.has(row.intelligence_type) ? "open_tasks" : "review",
+          action_payload: { emailSuggestionId: row.external_id, googleAccountId: accountId },
+          status: "pending",
+          updated_at: processedAt,
+        }));
+        if (alertRows.length) {
+          const { error } = await supabase.from("assistant_alerts").upsert(alertRows, { onConflict: "user_id,dedupe_key" });
+          if (error) throw error;
+        }
       }
       await supabase.from("google_tokens").update({ last_email_sync_at: processedAt, email_sync_status: "synced", email_sync_error: null, updated_at: processedAt }).eq("id", accountId).eq("user_id", userId);
       console.info(JSON.stringify({ service: "gmail-intelligence", runId, account: accountId.slice(0, 8), processed: rows.length }));

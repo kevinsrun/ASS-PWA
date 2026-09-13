@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     const user = await requireApiUser(request);
     const supabase = getServiceSupabaseClient();
     if (!supabase) throw new Error("A Supabase server key is not configured");
-    const [{ data, error }, accounts] = await Promise.all([
+    const [{ data, error }, accounts, alerts] = await Promise.all([
       supabase
         .from("email_suggestions")
         .select("id,google_account_id,sender,title,summary,intelligence_type,importance,action_required,date,time,conflict_details,recommendations,received_at")
@@ -27,9 +27,11 @@ export async function GET(request: NextRequest) {
         .order("received_at", { ascending: false })
         .limit(8),
       supabase.from("google_tokens").select("id,connected_email").eq("user_id", user.id),
+      supabase.from("assistant_alerts").select("id,kind,severity,title,summary,recommendation,created_at").eq("user_id", user.id).eq("status", "pending").order("created_at", { ascending: false }).limit(8),
     ]);
     if (error) throw error;
     if (accounts.error) throw accounts.error;
+    if (alerts.error) throw alerts.error;
     const emailByAccount = new Map(
       (accounts.data ?? []).map((account) => [String(account.id), String(account.connected_email ?? "Google account")])
     );
@@ -48,7 +50,32 @@ export async function GET(request: NextRequest) {
       recommendations: Array.isArray(item.recommendations) ? item.recommendations.map(String) : [],
       receivedAt: item.received_at ? String(item.received_at) : null,
     }));
-    return NextResponse.json({ items });
+    for (const alert of alerts.data ?? []) {
+      const kind = String(alert.kind);
+      items.push({
+        id: `alert:${alert.id}`,
+        accountEmail: "ASS",
+        sender: "ASS",
+        title: String(alert.title),
+        summary: String(alert.summary ?? ""),
+        type: kind === "calendar_conflict"
+          ? "calendar_conflict"
+          : kind === "calendar_merge"
+            ? "calendar_merge"
+            : kind.startsWith("finance_")
+              ? "finance_alert"
+              : "reminder",
+        importance: alert.severity === "urgent" || alert.severity === "high" ? "urgent" : alert.severity === "medium" ? "high" : "normal",
+        actionRequired: true,
+        date: null,
+        time: null,
+        conflictDetails: [],
+        recommendations: alert.recommendation ? [String(alert.recommendation)] : [],
+        receivedAt: alert.created_at ? String(alert.created_at) : null,
+      });
+    }
+    items.sort((left, right) => String(right.receivedAt ?? "").localeCompare(String(left.receivedAt ?? "")));
+    return NextResponse.json({ items: items.slice(0, 8) });
   } catch (error) {
     return failure(error);
   }
@@ -63,6 +90,14 @@ export async function POST(request: NextRequest) {
     }
     const supabase = getServiceSupabaseClient();
     if (!supabase) throw new Error("A Supabase server key is not configured");
+    if (body.id.startsWith("alert:")) {
+      const { error: alertError } = await supabase.from("assistant_alerts").update({
+        status: body.action === "accept" ? "accepted" : "dismissed",
+        updated_at: new Date().toISOString(),
+      }).eq("id", body.id.slice(6)).eq("user_id", user.id);
+      if (alertError) throw alertError;
+      return NextResponse.json({ ok: true });
+    }
     const { data: item, error } = await supabase
       .from("email_suggestions")
       .select("*")

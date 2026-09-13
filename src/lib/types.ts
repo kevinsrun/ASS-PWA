@@ -55,14 +55,19 @@ export type SavedPlan = {
   googleEtag?: string;
   googleUpdatedAt?: string;
   allDay?: boolean;
+  canonicalEventId?: string;
 };
 
 export type GoogleCalendarSummary = {
   id: string;
+  accountId: string;
   name: string;
   color: string | null;
   accessRole: string;
   primary: boolean;
+  state: CalendarSyncState;
+  lastSuccessfulSyncAt: string | null;
+  error: string | null;
 };
 
 export type GoogleAccountSummary = {
@@ -84,7 +89,7 @@ export type EmailIntelligenceItem = {
   sender: string;
   title: string;
   summary: string;
-  type: "task" | "deadline" | "meeting" | "reminder" | "project_update" | "scholarship" | "research" | "club_event" | "financial_aid" | "travel" | "interview" | "invoice" | "no_action";
+  type: "task" | "deadline" | "meeting" | "reminder" | "project_update" | "scholarship" | "research" | "club_event" | "financial_aid" | "travel" | "interview" | "invoice" | "finance_alert" | "calendar_conflict" | "calendar_merge" | "no_action";
   importance: "low" | "normal" | "high" | "urgent";
   actionRequired: boolean;
   date: string | null;
