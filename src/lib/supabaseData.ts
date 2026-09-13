@@ -240,12 +240,15 @@ async function replacePlans(userId: string, plans: SavedPlan[]) {
   const supabase = getBrowserSupabaseClient();
   if (!supabase) return;
 
-  const localPlans = plans.filter((plan) => plan.source !== "google");
+  // Canonical rows are server-owned. Replacing them from a stale browser snapshot
+  // made successful file/task conversions disappear on the next debounced save.
+  const localPlans = plans.filter((plan) => plan.source !== "google" && !plan.canonicalEventId);
   const { error: deleteError } = await supabase
     .from("plans")
     .delete()
     .eq("user_id", userId)
-    .neq("source", "google");
+    .neq("source", "google")
+    .is("canonical_event_id", null);
   if (deleteError) {
     throw new Error(`Supabase plans replace failed: ${deleteError.message}`);
   }

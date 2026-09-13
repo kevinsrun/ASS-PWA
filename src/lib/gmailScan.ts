@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "crypto";
+import { createCalendarEvent } from "@/lib/calendarEventService";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
 import { addMinutesToLabel, formatTimeLabel } from "@/lib/dateTime";
 import { getGoogleAccessToken, listGoogleAccounts } from "@/lib/googleAuth";
@@ -27,6 +28,8 @@ type Classification = {
   category: PlanCategory;
   confidence: number;
   recommendations: string[];
+  responseNeeded: boolean;
+  suggestedReply: string;
 };
 
 const intelligenceTypes = new Set<EmailIntelligenceItem["type"]>([
@@ -64,6 +67,8 @@ function safeClassification(message: GmailMessage, candidate?: Partial<Classific
     recommendations: Array.isArray(candidate?.recommendations)
       ? candidate.recommendations.map(String).filter(Boolean).slice(0, 4)
       : [],
+    responseNeeded: Boolean(candidate?.responseNeeded),
+    suggestedReply: String(candidate?.suggestedReply ?? "").slice(0, 8000),
   };
 }
 
@@ -100,7 +105,7 @@ async function fetchMessages(ids: string[], accessToken: string) {
   for (let index = 0; index < ids.length; index += 4) {
     messages.push(...await Promise.all(
       ids.slice(index, index + 4).map((id) => gmailFetch<GmailMessage>(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Reply-To&metadataHeaders=Date&metadataHeaders=Message-ID`,
         accessToken
       ))
     ));
@@ -124,7 +129,8 @@ Allowed importance: low, normal, high, urgent.
 Use null when date or time is genuinely unknown. Time must be HH:mm. Dates must be YYYY-MM-DD.
 Never invent commitments. actionRequired means the owner must decide or do something.
 Recommendations must be concise, specific, and preserve stated deadlines and priorities.
-Each object: {id,type,importance,actionRequired,title,summary,rationale,date,time,duration,category,confidence,recommendations}.
+responseNeeded is true only when the owner personally owes a reply. suggestedReply must be a concise draft in the owner's style and must never claim an action was completed unless context proves it. It may be empty when no response is needed.
+Each object: {id,type,importance,actionRequired,title,summary,rationale,date,time,duration,category,confidence,recommendations,responseNeeded,suggestedReply}.
 Allowed category values: school, fitness, work, health, personal, finance, other.
 
 Current ASS context:
@@ -211,17 +217,19 @@ async function contextForUser(userId: string) {
   const today = new Date();
   const through = new Date(today);
   through.setDate(through.getDate() + 90);
-  const [plans, todos, habits, courses] = await Promise.all([
+  const [plans, todos, habits, courses, styles, sourceContext] = await Promise.all([
     supabase.from("plans").select("title,date,start_label,end_label,priority").eq("user_id", userId).gte("date", today.toISOString().slice(0, 10)).lte("date", through.toISOString().slice(0, 10)).order("date").limit(250),
     supabase.from("todos").select("title,priority,due_date").eq("user_id", userId).eq("done", false).limit(40),
     supabase.from("habits").select("name,frequency,time_preference").eq("user_id", userId).limit(30),
     supabase.from("academic_courses").select("name,course_code,status").eq("user_id", userId).limit(30),
+    supabase.from("writing_style_profiles").select("context_type,traits,sample_count").eq("user_id", userId),
+    supabase.from("file_extractions").select("classification,summary,structured_data,created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(20),
   ]);
-  const error = [plans, todos, habits, courses].find((result) => result.error)?.error;
+  const error = [plans, todos, habits, courses, styles, sourceContext].find((result) => result.error)?.error;
   if (error) throw error;
   return {
     plans: (plans.data ?? []) as Array<{ title: string; date: string; start_label: string; end_label: string; priority: string }>,
-    prompt: JSON.stringify({ calendar: plans.data ?? [], tasks: todos.data ?? [], habits: habits.data ?? [], classes: courses.data ?? [] }),
+    prompt: JSON.stringify({ calendar: plans.data ?? [], tasks: todos.data ?? [], habits: habits.data ?? [], classes: courses.data ?? [], writingStyles: styles.data ?? [], selectedDocumentContext: sourceContext.data ?? [] }),
   };
 }
 
@@ -262,20 +270,28 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
         all.push({ id: `${accountId}:${message.id}`, accountEmail: String(account.connected_email ?? "Google account"), sender: header(message, "From"), title: item.title, summary: item.summary, type: item.type, importance: item.importance, actionRequired: item.actionRequired, date: item.date, time: item.time, conflictDetails: analysis.conflicts, recommendations: analysis.recommendations, receivedAt });
         return {
           user_id: userId, google_account_id: accountId, external_id: message.id,
-          message_id: message.id, thread_id: message.threadId ?? null,
-          sender: header(message, "From"), received_at: receivedAt,
+          message_id: header(message, "Message-ID") || message.id, thread_id: message.threadId ?? null,
+          sender: header(message, "Reply-To") || header(message, "From"), received_at: receivedAt,
           title: item.title, date: item.date, time: item.time, duration: item.duration,
           category: item.category, source: message.snippet ?? "",
           intelligence_type: item.type, importance: item.importance,
           action_required: item.actionRequired, summary: item.summary,
           rationale: item.rationale, confidence: Math.max(0, Math.min(1, Number(item.confidence) || 0)),
+          response_needed: item.responseNeeded, suggested_reply: item.suggestedReply,
           conflict_details: analysis.conflicts, recommendations: analysis.recommendations,
           processed_at: processedAt, status: item.type === "no_action" ? "dismissed" : "pending",
         };
       });
       if (rows.length > 0) {
-        const { data: savedSuggestions, error } = await supabase.from("email_suggestions").upsert(rows, { onConflict: "user_id,google_account_id,external_id" }).select("id,external_id,intelligence_type,action_required,confidence,conflict_details,recommendations,status");
+        const { data: savedSuggestions, error } = await supabase.from("email_suggestions").upsert(rows, { onConflict: "user_id,google_account_id,external_id" }).select("id,external_id,intelligence_type,action_required,response_needed,suggested_reply,confidence,conflict_details,recommendations,status,title,sender,thread_id,message_id");
         if (error) throw error;
+        const draftRows = (savedSuggestions ?? []).filter((row) => row.response_needed && Number(row.confidence) >= 0.82 && String(row.suggested_reply ?? "").trim()).map((row) => ({
+          user_id: userId, google_account_id: accountId, email_suggestion_id: row.id, thread_id: row.thread_id, in_reply_to_message_id: row.message_id,
+          recipient: String(row.sender ?? "").match(/<([^>]+)>/)?.[1] ?? String(row.sender ?? "").match(/[\w.+-]+@[\w.-]+/)?.[0] ?? null,
+          subject: String(row.title ?? "Reply").match(/^re:/i) ? String(row.title) : `Re: ${String(row.title ?? "Reply")}`,
+          body: String(row.suggested_reply), context_snapshot: { generatedFrom: "gmail_scan", styleProfilesIncluded: true }, status: "ready", updated_at: processedAt,
+        }));
+        if (draftRows.length) { const { error: draftError } = await supabase.from("email_drafts").upsert(draftRows, { onConflict: "email_suggestion_id" }); if (draftError) throw draftError; }
         const emailActions = (savedSuggestions ?? []).filter((row) => row.intelligence_type !== "no_action").map((row) => ({
           user_id: userId,
           email_suggestion_id: row.id,
@@ -310,26 +326,14 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
           const { error } = await supabase.from("todos").upsert(taskRows, { onConflict: "user_id,local_id" });
           if (error) throw error;
         }
-        const deadlinePlans = actionable
-          .filter((row) => row.date && ["deadline", "financial_aid", "invoice"].includes(row.intelligence_type))
-          .map((row) => ({
-            user_id: userId,
-            local_id: stableEmailId(accountId, row.external_id, "deadline"),
-            title: row.title,
-            date: row.date,
-            start_label: row.time ? formatTimeLabel(row.time) : "12:00 AM",
-            end_label: row.time ? addMinutesToLabel(row.time, Math.max(15, row.duration)) : "11:59 PM",
-            recurrence: "none",
-            category: row.category,
-            priority: row.importance === "urgent" || row.importance === "high" ? "high" : "medium",
-            notes: row.summary,
-            source: "ass",
-            all_day: !row.time,
-            updated_at: processedAt,
-          }));
-        if (deadlinePlans.length) {
-          const { error } = await supabase.from("plans").upsert(deadlinePlans, { onConflict: "user_id,local_id" });
-          if (error) throw error;
+        const deadlineEvents = actionable.filter((row) => row.date && ["deadline", "financial_aid", "invoice"].includes(row.intelligence_type));
+        for (const row of deadlineEvents) {
+          await createCalendarEvent(userId, {
+            title: row.title, date: String(row.date), startLabel: row.time ? formatTimeLabel(row.time) : "12:00 AM",
+            endLabel: row.time ? addMinutesToLabel(row.time, Math.max(15, row.duration)) : "11:59 PM", allDay: !row.time,
+            recurrence: "none", category: row.category, priority: row.importance === "urgent" || row.importance === "high" ? "high" : "medium",
+            notes: row.summary, sourceKind: "gmail", sourceId: `${accountId}:${row.external_id}:deadline`, syncToGoogle: false, googleAccountId: accountId,
+          });
         }
         const alertRows = actionable.map((row) => ({
           user_id: userId,

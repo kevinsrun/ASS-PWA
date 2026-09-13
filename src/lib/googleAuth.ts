@@ -34,7 +34,9 @@ type OAuthState = { userId: string; expiresAt: number; nonce: string };
 
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/drive.readonly",
   "openid",
   "email",
   "profile",

@@ -41,24 +41,38 @@ export async function GET(request: NextRequest) {
     const user = await requireApiUser(request);
     const supabase = getServiceSupabaseClient();
     if (!supabase) throw new Error("A Supabase server key is not configured");
-    const [{ data: files, error: filesError }, { data: extractions, error: extractionError }, { data: items, error: itemsError }, { data: courses, error: coursesError }] = await Promise.all([
+    const [{ data: files, error: filesError }, { data: sources, error: sourcesError }, { data: texts, error: textsError }, { data: extractions, error: extractionError }, { data: items, error: itemsError }, { data: courses, error: coursesError }] = await Promise.all([
       supabase.from("imported_files").select("*").eq("user_id", user.id).order("created_at", { ascending: false }).limit(100),
+      supabase.from("imported_sources").select("*").eq("user_id", user.id).neq("source_type", "file").order("created_at", { ascending: false }).limit(100),
+      supabase.from("imported_texts").select("id,imported_source_id,title,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(100),
       supabase.from("file_extractions").select("*").eq("user_id", user.id).order("created_at", { ascending: false }).limit(100),
       supabase.from("extraction_items").select("*").eq("user_id", user.id).order("created_at", { ascending: false }).limit(500),
       supabase.from("academic_courses").select("id,name,course_code").eq("user_id", user.id),
     ]);
     if (filesError) throw filesError;
+    if (sourcesError) throw sourcesError;
+    if (textsError) throw textsError;
     if (extractionError) throw extractionError;
     if (itemsError) throw itemsError;
     if (coursesError) throw coursesError;
     const extractionByFile = new Map((extractions ?? []).map((row) => [String(row.imported_file_id), row]));
+    const extractionBySource = new Map((extractions ?? []).filter((row) => row.imported_source_id).map((row) => [String(row.imported_source_id), row]));
     const courseById = new Map((courses ?? []).map((row) => [String(row.id), row]));
     const itemsByFile = new Map<string, typeof items>();
+    const itemsBySource = new Map<string, typeof items>();
     for (const item of items ?? []) {
       const key = String(item.imported_file_id);
       itemsByFile.set(key, [...(itemsByFile.get(key) ?? []), item]);
+      if (item.imported_source_id) {
+        const sourceKey = String(item.imported_source_id);
+        itemsBySource.set(sourceKey, [...(itemsBySource.get(sourceKey) ?? []), item]);
+      }
     }
-    return NextResponse.json({ files: (files ?? []).map((file) => ({ ...file, linked_course: file.linked_course_id ? courseById.get(String(file.linked_course_id)) ?? null : null, extraction: extractionByFile.get(String(file.id)) ?? null, items: itemsByFile.get(String(file.id)) ?? [] })) });
+    const textBySource = new Map((texts ?? []).map((row) => [String(row.imported_source_id), row]));
+    return NextResponse.json({
+      files: (files ?? []).map((file) => ({ ...file, linked_course: file.linked_course_id ? courseById.get(String(file.linked_course_id)) ?? null : null, extraction: extractionByFile.get(String(file.id)) ?? null, items: itemsByFile.get(String(file.id)) ?? [] })),
+      texts: (sources ?? []).map((source) => ({ ...source, title: textBySource.get(String(source.id))?.title ?? "Imported text", extraction: extractionBySource.get(String(source.id)) ?? null, items: itemsBySource.get(String(source.id)) ?? [] })),
+    });
   } catch (error) {
     return failure(error);
   }
@@ -66,6 +80,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   let fileId: string | null = null;
+  let importedSourceId: string | null = null;
   try {
     const user = await requireApiUser(request);
     const supabase = getServiceSupabaseClient();
@@ -81,12 +96,19 @@ export async function POST(request: NextRequest) {
     const checksum = createHash("sha256").update(buffer).digest("hex");
     const { data: duplicate } = await supabase.from("imported_files").select("id").eq("user_id", user.id).eq("checksum", checksum).neq("status", "failed").maybeSingle();
     if (duplicate) throw new ApiAuthError("This file is already in your Inbox.", 409);
+    const { data: importedSource, error: sourceError } = await supabase.from("imported_sources").insert({
+      user_id: user.id, source_type: "file", external_id: checksum, processing_status: "analyzing",
+      file_metadata: { name: file.name.slice(0, 240), mimeType, byteSize: file.size },
+      user_context: { courseId: form.get("courseId") || null, projectLocalId: form.get("projectLocalId") ? Number(form.get("projectLocalId")) : null },
+    }).select("id").single();
+    if (sourceError || !importedSource) throw sourceError ?? new Error("Could not create the import record");
+    importedSourceId = String(importedSource.id);
     const now = new Date();
     const storagePath = `${user.id}/${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}/${randomUUID()}-${safeFileName(file.name)}`;
     const { error: uploadError } = await supabase.storage.from("ass-imports").upload(storagePath, buffer, { contentType: mimeType, upsert: false });
     if (uploadError) throw uploadError;
     const { data: imported, error: insertError } = await supabase.from("imported_files").insert({
-      user_id: user.id, name: file.name.slice(0, 240), source, storage_path: storagePath,
+      user_id: user.id, imported_source_id: importedSourceId, name: file.name.slice(0, 240), source, storage_path: storagePath,
       mime_type: mimeType, byte_size: file.size, checksum, status: "analyzing",
       linked_course_id: form.get("courseId") || null,
       linked_project_local_id: form.get("projectLocalId") ? Number(form.get("projectLocalId")) : null,
@@ -111,7 +133,7 @@ export async function POST(request: NextRequest) {
       linkedCourseId = String(course.id);
     }
     const { data: extraction, error: extractionError } = await supabase.from("file_extractions").insert({
-      user_id: user.id, imported_file_id: fileId, model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+      user_id: user.id, imported_file_id: fileId, imported_source_id: importedSourceId, model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
       classification: analysis.classification, confidence: analysis.confidence, summary: analysis.summary,
       structured_data: analysis.structuredData,
     }).select("id").single();
@@ -119,8 +141,9 @@ export async function POST(request: NextRequest) {
     let insertedItems: Array<{ id: string; required: boolean; confidence: number; item_type: string; review_status: string }> = [];
     if (analysis.items.length) {
       const { data, error: itemsError } = await supabase.from("extraction_items").insert(analysis.items.map((item) => ({
-        user_id: user.id, imported_file_id: fileId, extraction_id: extraction.id, item_type: item.type,
+        user_id: user.id, imported_file_id: fileId, imported_source_id: importedSourceId, extraction_id: extraction.id, item_type: item.type, normalized_type: item.normalizedType,
         title: item.title, description: item.description, due_at: item.dueAt, duration_minutes: item.durationMinutes,
+        time_zone: item.timeZone, recurrence_rule: item.recurrenceRule, location: item.location,
         confidence: item.confidence, required: item.required, payload: item.payload,
       }))).select("id,required,confidence,item_type,review_status");
       if (itemsError) throw itemsError;
@@ -135,6 +158,7 @@ export async function POST(request: NextRequest) {
       linked_course_id: linkedCourseId, extracted_item_count: insertedItems.length, processing_error: null, last_analyzed_at: completedAt, updated_at: completedAt,
     }).eq("id", fileId).eq("user_id", user.id);
     if (updateError) throw updateError;
+    await supabase.from("imported_sources").update({ processing_status: pendingCount > 0 ? "needs_review" : "extracted", processing_error: null, updated_at: completedAt }).eq("id", importedSourceId).eq("user_id", user.id);
     await supabase.from("assistant_alerts").upsert({
       user_id: user.id, dedupe_key: `file:${fileId}`, kind: "file_import", severity: pendingCount ? "normal" : "low",
       title: `${analysis.classification.replaceAll("_", " ")} imported`,
@@ -145,9 +169,10 @@ export async function POST(request: NextRequest) {
     console.info(JSON.stringify({ service: "file-intelligence", fileId, stage: "completed", classification: analysis.classification, items: insertedItems.length, autoCommitted: autoCommit.length }));
     return NextResponse.json({ id: fileId, classification: analysis.classification, itemCount: insertedItems.length, pendingCount }, { status: 201 });
   } catch (error) {
-    if (fileId) {
+    if (fileId || importedSourceId) {
       const supabase = getServiceSupabaseClient();
       await supabase?.from("imported_files").update({ status: "failed", processing_error: error instanceof Error ? error.message.slice(0, 2000) : "Unknown analysis failure", updated_at: new Date().toISOString() }).eq("id", fileId);
+      if (importedSourceId) await supabase?.from("imported_sources").update({ processing_status: "failed", processing_error: error instanceof Error ? error.message.slice(0, 2000) : "Unknown analysis failure", updated_at: new Date().toISOString() }).eq("id", importedSourceId);
     }
     return failure(error);
   }

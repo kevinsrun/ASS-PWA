@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { DragEvent, useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, ChevronRight, FileCheck2, FileText, Inbox, LoaderCircle, Upload, UserRound, X } from "lucide-react";
+import { AlertCircle, Check, ChevronRight, FileCheck2, FileText, Inbox, LoaderCircle, Send, Upload, UserRound, X } from "lucide-react";
 import type { EmailIntelligenceItem } from "@/lib/types";
 import { useAppContext } from "@/providers/AppProvider";
 import { useAuth } from "@/providers/AuthProvider";
@@ -15,6 +15,7 @@ type ExtractionItem = {
   due_at: string | null;
   confidence: number;
   required: boolean;
+  normalized_type: string | null;
   review_status: "pending" | "approved" | "rejected" | "committed";
 };
 
@@ -34,6 +35,20 @@ type ImportedFile = {
   items: ExtractionItem[];
 };
 
+type ImportedText = {
+  id: string;
+  title: string;
+  source_type: string;
+  processing_status: "uploaded" | "analyzing" | "extracted" | "needs_review" | "failed";
+  processing_error: string | null;
+  created_at: string;
+  extraction: { summary: string; confidence: number } | null;
+  items: ExtractionItem[];
+};
+type DriveAccount = { id: string; email: string | null; name: string | null };
+type DriveFile = { id: string; name: string; mimeType: string; modifiedTime?: string };
+type EmailDraft = { id: string; recipient: string | null; subject: string; body: string; status: string; created_at: string };
+
 const eventTypes = new Set(["meeting", "club_event", "interview", "travel"]);
 
 function fileSize(bytes: number) {
@@ -50,26 +65,44 @@ export default function InboxPage() {
   const { reloadCloud } = useAppContext();
   const inputRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<ImportedFile[]>([]);
+  const [texts, setTexts] = useState<ImportedText[]>([]);
   const [emailItems, setEmailItems] = useState<EmailIntelligenceItem[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [conversionTypes, setConversionTypes] = useState<Record<string, string>>({});
+  const [textTitle, setTextTitle] = useState("");
+  const [textContent, setTextContent] = useState("");
+  const [textSource, setTextSource] = useState("pasted_text");
+  const [driveAccounts, setDriveAccounts] = useState<DriveAccount[]>([]);
+  const [driveAccountId, setDriveAccountId] = useState("");
+  const [driveFiles, setDriveFiles] = useState<DriveFile[]>([]);
+  const [drafts, setDrafts] = useState<EmailDraft[]>([]);
+  const [draftBodies, setDraftBodies] = useState<Record<string, string>>({});
 
   const headers = useCallback(() => ({ Authorization: `Bearer ${session?.access_token ?? ""}` }), [session?.access_token]);
 
   const load = useCallback(async () => {
     if (!session?.access_token) return;
     try {
-      const [fileResponse, feedResponse] = await Promise.all([
+      const [fileResponse, feedResponse, driveResponse, draftResponse] = await Promise.all([
         fetch("/api/files", { headers: headers(), cache: "no-store" }),
         fetch("/api/intelligence/feed", { headers: headers(), cache: "no-store" }),
+        fetch("/api/drive/files", { headers: headers(), cache: "no-store" }),
+        fetch("/api/gmail/drafts", { headers: headers(), cache: "no-store" }),
       ]);
       const fileBody = await fileResponse.json();
       const feedBody = await feedResponse.json();
+      const driveBody = await driveResponse.json();
+      const draftBody = await draftResponse.json();
       if (!fileResponse.ok) throw new Error(fileBody.error || "Could not load files");
       if (!feedResponse.ok) throw new Error(feedBody.error || "Could not load assistant actions");
       setFiles(fileBody.files ?? []);
+      setTexts(fileBody.texts ?? []);
       setEmailItems((feedBody.items ?? []).filter((item: EmailIntelligenceItem) => item.accountEmail !== "ASS"));
+      if (driveResponse.ok) { setDriveAccounts(driveBody.accounts ?? []); setDriveAccountId((current) => current || driveBody.accounts?.[0]?.id || ""); }
+      if (draftResponse.ok) setDrafts(draftBody.drafts ?? []);
       setError(null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Inbox is unavailable");
@@ -100,16 +133,55 @@ export default function InboxPage() {
     await reloadCloud();
   }
 
+  async function handleDraft(id: string, action: "save" | "ignore") {
+    setBusy(`draft:${id}`); setError(null);
+    try { const response = await fetch("/api/gmail/drafts", { method: "POST", headers: { ...headers(), "Content-Type": "application/json" }, body: JSON.stringify({ id, action, draftBody: draftBodies[id] }) }); const body = await response.json(); if (!response.ok) throw new Error(body.error || "Could not update this draft"); setDrafts((current) => current.filter((draft) => draft.id !== id)); setNotice(action === "save" ? "Saved to Gmail Drafts. Nothing was sent." : "Marked as no response needed."); }
+    catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not update this draft"); }
+    finally { setBusy(null); }
+  }
+
+  async function browseDrive() {
+    if (!driveAccountId) return;
+    setBusy("drive-browse"); setError(null);
+    try { const response = await fetch(`/api/drive/files?accountId=${encodeURIComponent(driveAccountId)}&folder=Grow%20Up`, { headers: headers(), cache: "no-store" }); const body = await response.json(); if (!response.ok) throw new Error(body.error || "Could not open Grow Up"); setDriveFiles(body.files ?? []); if (!body.folder) setNotice("No folder named “Grow Up” was found in this account."); }
+    catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not open Google Drive"); }
+    finally { setBusy(null); }
+  }
+
+  async function importDriveFile(fileId: string) {
+    setBusy(`drive:${fileId}`); setError(null); setNotice(null);
+    try { const response = await fetch("/api/drive/files", { method: "POST", headers: { ...headers(), "Content-Type": "application/json" }, body: JSON.stringify({ accountId: driveAccountId, fileId }) }); const body = await response.json(); if (!response.ok) throw new Error(body.error || "Could not import this Drive file"); setNotice(body.pendingCount ? `Drive file analyzed. Review ${body.pendingCount} suggested action${body.pendingCount === 1 ? "" : "s"}.` : "Drive file imported successfully."); await load(); await reloadCloud(); }
+    catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not import this Drive file"); }
+    finally { setBusy(null); }
+  }
+
+  async function importText() {
+    if (!session?.access_token || !textContent.trim()) return;
+    setBusy("text-import"); setError(null); setNotice(null);
+    try {
+      const response = await fetch("/api/imports/text", { method: "POST", headers: { ...headers(), "Content-Type": "application/json" }, body: JSON.stringify({ title: textTitle, content: textContent, sourceType: textSource }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not analyze this text");
+      setTextTitle(""); setTextContent("");
+      setNotice(body.pendingCount ? `Analysis complete. Review ${body.pendingCount} suggested action${body.pendingCount === 1 ? "" : "s"}.` : "Text analyzed and committed successfully.");
+      await load(); await reloadCloud();
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not analyze this text"); }
+    finally { setBusy(null); }
+  }
+
   async function review(itemId: string, action: "approve" | "reject") {
     setBusy(itemId);
+    setError(null);
+    setNotice(null);
     try {
       const response = await fetch("/api/files/actions", {
-        method: "POST", headers: { ...headers(), "Content-Type": "application/json" }, body: JSON.stringify({ itemId, action }),
+        method: "POST", headers: { ...headers(), "Content-Type": "application/json" }, body: JSON.stringify({ itemId, action, normalizedType: conversionTypes[itemId] }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Could not save your decision");
       await load();
       await reloadCloud();
+      if (action === "approve") setNotice(body.warning ? `Created in ASS Calendar. Google sync needs attention: ${body.warning}` : "Converted successfully. Calendar and tasks are up to date.");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Could not save your decision");
     } finally {
@@ -164,7 +236,18 @@ export default function InboxPage() {
       </button>
       <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.png,.jpg,.jpeg" onChange={(event) => event.target.files && void upload(event.target.files, "local")} />
 
+      <section className="text-import-card" aria-label="Paste text to analyze">
+        <div className="text-import-heading"><div><strong>Paste text</strong><small>Notes, schedules, copied email, or your sent-message export</small></div><select aria-label="Text source" value={textSource} onChange={(event) => setTextSource(event.target.value)}><option value="pasted_text">Pasted text</option><option value="manual_text">Manual notes</option><option value="imessage">My sent messages</option></select></div>
+        <input aria-label="Import title" value={textTitle} onChange={(event) => setTextTitle(event.target.value)} placeholder="Title (optional)" />
+        <textarea aria-label="Text to analyze" value={textContent} onChange={(event) => setTextContent(event.target.value)} placeholder="Paste content here…" rows={5} />
+        <button type="button" disabled={!textContent.trim() || busy === "text-import"} onClick={() => void importText()}>{busy === "text-import" ? <LoaderCircle className="is-spinning" size={17} /> : <Send size={17} />}{busy === "text-import" ? "Analyzing…" : "Analyze"}</button>
+        {textSource === "imessage" ? <small>Only paste messages you sent. ASS will not access Messages or scrape its database.</small> : null}
+      </section>
+
+      {driveAccounts.length ? <section className="drive-import-card"><div><strong>Google Drive</strong><small>Browse only files in “Grow Up”; nothing is imported until you choose it.</small></div><div><select aria-label="Google Drive account" value={driveAccountId} onChange={(event) => { setDriveAccountId(event.target.value); setDriveFiles([]); }}>{driveAccounts.map((account) => <option key={account.id} value={account.id}>{account.email || account.name || "Google account"}</option>)}</select><button type="button" disabled={busy === "drive-browse"} onClick={() => void browseDrive()}>{busy === "drive-browse" ? "Opening…" : "Browse Grow Up"}</button></div>{driveFiles.length ? <ul>{driveFiles.map((file) => <li key={file.id}><span><strong>{file.name}</strong><small>{file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : human(file.mimeType)}</small></span><button type="button" disabled={busy === `drive:${file.id}`} onClick={() => void importDriveFile(file.id)}>{busy === `drive:${file.id}` ? "Importing…" : "Import"}</button></li>)}</ul> : null}</section> : null}
+
       {error ? <div className="inbox-error" role="alert"><AlertCircle size={18} /><span>{error}</span></div> : null}
+      {notice ? <div className="inbox-notice" role="status"><Check size={18} /><span>{notice}</span></div> : null}
 
       {emailItems.length ? (
         <section className="inbox-section">
@@ -196,6 +279,8 @@ export default function InboxPage() {
         </section>
       ) : null}
 
+      {drafts.length ? <section className="inbox-section"><div className="inbox-section-title"><span>Replies ready for review</span><small>{drafts.length}</small></div><div className="draft-list">{drafts.map((draft) => <article key={draft.id}><small>To {draft.recipient || "unknown recipient"}</small><h2>{draft.subject}</h2><textarea aria-label={`Draft reply for ${draft.subject}`} rows={7} value={draftBodies[draft.id] ?? draft.body} onChange={(event) => setDraftBodies((current) => ({ ...current, [draft.id]: event.target.value }))} /><div><button type="button" disabled={busy === `draft:${draft.id}`} onClick={() => void handleDraft(draft.id, "save")}>{busy === `draft:${draft.id}` ? "Saving…" : "Save to Gmail Drafts"}</button><button type="button" disabled={busy === `draft:${draft.id}`} onClick={() => void handleDraft(draft.id, "ignore")}>No response needed</button></div><em>ASS can create a draft, but it cannot send it.</em></article>)}</div></section> : null}
+
       <section className="inbox-section">
         <div className="inbox-section-title"><span>Files</span><small>{files.length}</small></div>
         {files.length === 0 ? (
@@ -215,7 +300,13 @@ export default function InboxPage() {
                     {file.items.filter((item) => item.review_status === "pending").map((item) => (
                       <div key={item.id} className="extraction-item">
                         <div><small>{human(item.item_type)} · {Math.round(Number(item.confidence) * 100)}% confidence</small><strong>{item.title}</strong>{item.due_at ? <time>{new Date(item.due_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</time> : null}</div>
-                        <div><button aria-label={`Approve ${item.title}`} disabled={busy === item.id} type="button" onClick={() => void review(item.id, "approve")}><Check size={17} /></button><button aria-label={`Ignore ${item.title}`} disabled={busy === item.id} type="button" onClick={() => void review(item.id, "reject")}><X size={17} /></button></div>
+                        <div className="extraction-convert">
+                          <select aria-label={`Convert ${item.title} as`} value={conversionTypes[item.id] ?? item.normalized_type ?? (item.due_at ? "calendar_event" : "task")} onChange={(event) => setConversionTypes((current) => ({ ...current, [item.id]: event.target.value }))}>
+                            <option value="calendar_event">Calendar event</option><option value="deadline">Deadline + task</option><option value="study_block">Study block</option><option value="task">Task</option><option value="project">Project task</option><option value="course">Course</option><option value="reference">Reference only</option>
+                          </select>
+                          <button className="convert-button" disabled={busy === item.id} type="button" onClick={() => void review(item.id, "approve")}>{busy === item.id ? "Converting…" : "Convert"}</button>
+                          <button aria-label={`Ignore ${item.title}`} disabled={busy === item.id} type="button" onClick={() => void review(item.id, "reject")}><X size={17} /></button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -225,6 +316,8 @@ export default function InboxPage() {
           </div>
         )}
       </section>
+
+      {texts.length ? <section className="inbox-section"><div className="inbox-section-title"><span>Text imports</span><small>{texts.length}</small></div><div className="file-list">{texts.map((source) => <article key={source.id} className="file-card"><div className="file-card-heading"><FileText size={20} /><div><h2>{source.title}</h2><p>{human(source.source_type)} · Added {new Date(source.created_at).toLocaleDateString()}</p></div><span className={`file-status is-${source.processing_status}`}>{human(source.processing_status)}</span></div>{source.processing_error ? <p className="file-failure">{source.processing_error}</p> : source.extraction?.summary ? <p className="file-summary">{source.extraction.summary}</p> : null}{source.items.some((item) => item.review_status === "pending") ? <div className="extraction-list">{source.items.filter((item) => item.review_status === "pending").map((item) => <div key={item.id} className="extraction-item"><div><small>{human(item.item_type)} · {Math.round(Number(item.confidence) * 100)}% confidence</small><strong>{item.title}</strong>{item.due_at ? <time>{new Date(item.due_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</time> : null}</div><div className="extraction-convert"><select aria-label={`Convert ${item.title} as`} value={conversionTypes[item.id] ?? item.normalized_type ?? (item.due_at ? "calendar_event" : "task")} onChange={(event) => setConversionTypes((current) => ({ ...current, [item.id]: event.target.value }))}><option value="calendar_event">Calendar event</option><option value="deadline">Deadline + task</option><option value="study_block">Study block</option><option value="task">Task</option><option value="project">Project task</option><option value="reference">Reference only</option></select><button className="convert-button" disabled={busy === item.id} type="button" onClick={() => void review(item.id, "approve")}>{busy === item.id ? "Converting…" : "Convert"}</button><button aria-label={`Ignore ${item.title}`} disabled={busy === item.id} type="button" onClick={() => void review(item.id, "reject")}><X size={17} /></button></div></div>)}</div> : null}</article>)}</div></section> : null}
     </main>
   );
 }

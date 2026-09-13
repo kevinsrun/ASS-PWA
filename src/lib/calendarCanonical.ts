@@ -63,7 +63,7 @@ function attendeeEmails(event: CanonicalGoogleEvent) {
     .sort();
 }
 
-function fingerprint(event: CanonicalGoogleEvent) {
+export function canonicalEventFingerprint(event: CanonicalGoogleEvent) {
   const payload = [
     normalized(event.summary),
     eventInstant(event.start).slice(0, 16),
@@ -73,7 +73,7 @@ function fingerprint(event: CanonicalGoogleEvent) {
   return createHash("sha256").update(payload).digest("hex");
 }
 
-function stablePlanId(value: string) {
+export function canonicalPlanLocalId(value: string) {
   const digest = createHash("sha256").update(value).digest();
   return 1_000_000_000 + digest.readUInt32BE(0);
 }
@@ -170,7 +170,7 @@ export async function upsertCanonicalEvent(values: {
   const startAt = eventInstant(event.start);
   const endAt = eventInstant(event.end, true);
   const attendees = attendeeEmails(event);
-  const eventFingerprint = fingerprint(event);
+  const eventFingerprint = canonicalEventFingerprint(event);
 
   const { data: existingSource, error: sourceReadError } = await supabase
     .from("calendar_event_sources")
@@ -281,7 +281,7 @@ export async function upsertCanonicalEvent(values: {
   const { error: planError } = await supabase.from("plans").upsert({
     ...plan,
     user_id: userId,
-    local_id: stablePlanId(canonicalId),
+    local_id: canonicalPlanLocalId(canonicalId),
     canonical_event_id: canonicalId,
   }, { onConflict: "user_id,canonical_event_id" });
   if (planError) throw planError;

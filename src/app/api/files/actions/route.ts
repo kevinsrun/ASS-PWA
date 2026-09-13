@@ -1,20 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
-import { commitExtractionItem } from "@/lib/fileIntelligence";
+import { commitExtractionItem, normalizedExtractionTypes } from "@/lib/fileIntelligence";
 import { ApiAuthError, requireApiUser } from "@/lib/serverAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 
 export async function POST(request: NextRequest) {
+  let attemptedItemId = "unknown";
   try {
     const user = await requireApiUser(request);
-    const body = await request.json() as { itemId?: string; action?: "approve" | "reject" };
+    const body = await request.json() as { itemId?: string; action?: "approve" | "reject"; normalizedType?: string };
     if (!body.itemId || !body.action || !["approve", "reject"].includes(body.action)) throw new ApiAuthError("Choose an extracted item and an action.", 400);
+    if (body.normalizedType && !normalizedExtractionTypes.includes(body.normalizedType as typeof normalizedExtractionTypes[number])) throw new ApiAuthError("Choose a valid conversion type.", 400);
+    attemptedItemId = body.itemId;
     const supabase = getServiceSupabaseClient();
     if (!supabase) throw new Error("A Supabase server key is not configured");
-    const { data: item, error } = await supabase.from("extraction_items").select("id,title,item_type,confidence,review_status").eq("id", body.itemId).eq("user_id", user.id).single();
+    const { data: item, error } = await supabase.from("extraction_items").select("id,imported_file_id,imported_source_id,title,item_type,confidence,review_status").eq("id", body.itemId).eq("user_id", user.id).single();
     if (error || !item) throw new ApiAuthError("Extracted item not found.", 404);
+    let conversionResult: Awaited<ReturnType<typeof commitExtractionItem>> | null = null;
     if (body.action === "approve") {
       await supabase.from("extraction_items").update({ review_status: "approved", updated_at: new Date().toISOString() }).eq("id", body.itemId).eq("user_id", user.id);
-      await commitExtractionItem(user.id, body.itemId);
+      conversionResult = await commitExtractionItem(user.id, body.itemId, { normalizedType: body.normalizedType });
     } else {
       const { error: rejectError } = await supabase.from("extraction_items").update({ review_status: "rejected", updated_at: new Date().toISOString() }).eq("id", body.itemId).eq("user_id", user.id);
       if (rejectError) throw rejectError;
@@ -23,11 +27,24 @@ export async function POST(request: NextRequest) {
       user_id: user.id, source_kind: "file", source_id: body.itemId, decision: body.action,
       context: { title: item.title, itemType: item.item_type, confidence: item.confidence }, updated_at: new Date().toISOString(),
     }, { onConflict: "user_id,source_kind,source_id" });
-    return NextResponse.json({ ok: true });
+    if (item.imported_file_id) {
+      const { count } = await supabase.from("extraction_items").select("id", { count: "exact", head: true }).eq("imported_file_id", item.imported_file_id).eq("review_status", "pending");
+      if (!count) await supabase.from("imported_files").update({ status: "extracted", processing_error: null, updated_at: new Date().toISOString() }).eq("id", item.imported_file_id).eq("user_id", user.id);
+    }
+    if (item.imported_source_id) {
+      const { count } = await supabase.from("extraction_items").select("id", { count: "exact", head: true }).eq("imported_source_id", item.imported_source_id).eq("review_status", "pending");
+      if (!count) await supabase.from("imported_sources").update({ processing_status: "extracted", processing_error: null, updated_at: new Date().toISOString() }).eq("id", item.imported_source_id).eq("user_id", user.id);
+    }
+    return NextResponse.json({ ok: true, result: conversionResult, warning: conversionResult?.calendarResult?.googleError ?? null });
   } catch (error) {
     const status = error instanceof ApiAuthError ? error.status : 500;
     const message = error instanceof Error ? error.message : "Could not update this item.";
     console.error(JSON.stringify({ service: "file-intelligence", stage: "review-action-failed", message }));
+    try {
+      const user = await requireApiUser(request);
+      const supabase = getServiceSupabaseClient();
+      if (supabase) await supabase.from("assistant_action_items").upsert({ user_id: user.id, source_kind: "extraction_item", source_id: attemptedItemId, action_type: "conversion_failed", title: "Calendar conversion failed", summary: message, priority: "high", status: "failed", error_message: message, updated_at: new Date().toISOString() }, { onConflict: "user_id,source_kind,source_id,action_type" });
+    } catch { /* The original auth or conversion error remains authoritative. */ }
     return NextResponse.json({ error: message }, { status });
   }
 }

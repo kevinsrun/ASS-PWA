@@ -6,12 +6,14 @@ import TaskCard from "@/components/TaskCard";
 import { addMinutesToLabel } from "@/lib/dateTime";
 
 export default function TodosPage() {
-  const { todos, addTodo, toggleTodo, deleteTodo, updateTodo, addPlan } =
+  const { todos, addTodo, toggleTodo, deleteTodo, updateTodo, createPlan } =
     useAppContext();
   const [newTodo, setNewTodo] = useState("");
   const [priority, setPriority] = useState<"low" | "medium" | "high">("medium");
   const [duration, setDuration] = useState(60);
   const [dueDate, setDueDate] = useState("");
+  const [convertingId, setConvertingId] = useState<number | null>(null);
+  const [conversionMessage, setConversionMessage] = useState<string | null>(null);
 
   function handleAddTodo() {
     addTodo(newTodo, priority, duration, dueDate || null);
@@ -47,11 +49,13 @@ export default function TodosPage() {
     (todo) => !todo.done && todo.dueDate !== today && !(todo.dueDate && todo.dueDate < today)
   );
 
-  function convertToCalendar(todoId: number) {
+  async function convertToCalendar(todoId: number) {
     const todo = todos.find((candidate) => candidate.id === todoId);
     if (!todo) return;
-
-    addPlan({
+    setConvertingId(todoId);
+    setConversionMessage(null);
+    console.info("Calendar conversion selected", { todoId, itemType: "task", normalizedType: "calendar_event" });
+    const result = await createPlan({
       title: todo.title,
       date: todo.dueDate ?? today,
       startLabel: "9:00 AM",
@@ -60,7 +64,11 @@ export default function TodosPage() {
       category: "work",
       priority: todo.priority,
       notes: `Converted from todo${(todo.tags ?? []).length ? `: ${todo.tags?.join(", ")}` : ""}`,
-    });
+    }, { kind: "task", id: String(todo.id) });
+    setConvertingId(null);
+    if (!result.ok) setConversionMessage(`Couldn’t convert “${todo.title}”: ${result.error}`);
+    else if (result.googleError) setConversionMessage(`Added “${todo.title}” to ASS Calendar. Google sync needs attention: ${result.googleError}`);
+    else setConversionMessage(`Added “${todo.title}” to Calendar.`);
   }
 
   return (
@@ -119,6 +127,7 @@ export default function TodosPage() {
         </div>
 
         <div className="task-sections">
+          {conversionMessage ? <p className="conversion-message" role="status">{conversionMessage}</p> : null}
           {[
             ["Overdue", overdueTodos],
             ["Today", todayTodos],
@@ -136,10 +145,11 @@ export default function TodosPage() {
                       onUpdate={updateTodo}
                     />
                     <button
-                      onClick={() => convertToCalendar(todo.id)}
+                      onClick={() => void convertToCalendar(todo.id)}
+                      disabled={convertingId === todo.id}
                       className="quiet-action"
                     >
-                      Convert to calendar event
+                      {convertingId === todo.id ? "Converting…" : "Convert to calendar event"}
                     </button>
                   </div>
                 ))}

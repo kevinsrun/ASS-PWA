@@ -870,6 +870,10 @@ function recurrenceRules(plan: SavedPlan) {
   if (plan.recurrence === "weekends") {
     return ["RRULE:FREQ=WEEKLY;BYDAY=SA,SU"];
   }
+  if (plan.recurrence === "custom" && plan.customRecurrence?.trim()) {
+    const rule = plan.customRecurrence.trim();
+    return [rule.startsWith("RRULE:") ? rule : `RRULE:${rule}`];
+  }
   return undefined;
 }
 
@@ -938,7 +942,7 @@ export async function createGoogleCalendarEvent(
     plan.googleCalendarId,
     plan.googleAccountId
   );
-  await googleRequest<GoogleEvent>(
+  const created = await googleRequest<GoogleEvent>(
     userId,
     calendar.accountId,
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
@@ -949,27 +953,31 @@ export async function createGoogleCalendarEvent(
       body: JSON.stringify(googleEventBody(plan, calendar.timeZone)),
     }
   );
-  const status = await syncGoogleCalendarForUser(
-    userId,
-    calendar.timeZone,
-    calendar.accountId
-  );
   const supabase = getServiceSupabaseClient();
-  if (status.state === "synced" && supabase) {
+  if (supabase) {
     const { error } = await supabase
       .from("plans")
-      .delete()
+      .update({
+        google_account_id: calendar.accountId,
+        google_calendar_id: calendar.id,
+        google_event_id: created.body.id ?? null,
+        google_recurring_event_id: created.body.recurringEventId ?? null,
+        google_etag: created.body.etag ?? null,
+        google_updated_at: created.body.updated ?? new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
       .eq("user_id", userId)
-      .eq("local_id", plan.id)
-      .neq("source", "google");
+      .eq("local_id", plan.id);
     if (error) {
       throw new CalendarSyncError(
         "error",
-        `Google event was created, but the local draft could not be cleared: ${error.message}`
+        `Google event was created, but its local link could not be saved: ${error.message}`
       );
     }
   }
-  return status;
+  const now = new Date().toISOString();
+  console.info(JSON.stringify({ service: "google-calendar-sync", stage: "event-created", account: calendar.accountId.slice(0, 8), calendar: calendar.id, eventId: created.body.id ?? null }));
+  return { state: "synced" as const, connected: true, lastSuccessfulSyncAt: now, lastAttemptAt: now, error: null, timeZone: calendar.timeZone, connectedEmail: null, calendars: [], accounts: [] };
 }
 
 export async function updateGoogleCalendarEvent(
@@ -998,7 +1006,8 @@ export async function updateGoogleCalendarEvent(
       body: JSON.stringify(googleEventBody(plan, calendar.timeZone)),
     }
   );
-  return syncGoogleCalendarForUser(userId, calendar.timeZone, calendar.accountId);
+  const now = new Date().toISOString();
+  return { state: "synced" as const, connected: true, lastSuccessfulSyncAt: now, lastAttemptAt: now, error: null, timeZone: calendar.timeZone, connectedEmail: null, calendars: [], accounts: [] };
 }
 
 export async function deleteGoogleCalendarEvent(
@@ -1016,5 +1025,6 @@ export async function deleteGoogleCalendarEvent(
     )}/events/${encodeURIComponent(eventId)}`,
     { method: "DELETE" }
   );
-  return syncGoogleCalendarForUser(userId, calendar.timeZone, calendar.accountId);
+  const now = new Date().toISOString();
+  return { state: "synced" as const, connected: true, lastSuccessfulSyncAt: now, lastAttemptAt: now, error: null, timeZone: calendar.timeZone, connectedEmail: null, calendars: [], accounts: [] };
 }

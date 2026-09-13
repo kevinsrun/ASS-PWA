@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  createGoogleCalendarEvent,
   deleteGoogleCalendarEvent,
   updateGoogleCalendarEvent,
 } from "@/lib/googleCalendarSync";
+import { createCalendarEvent } from "@/lib/calendarEventService";
 import { ApiAuthError, requireApiUser } from "@/lib/serverAuth";
+import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import type { SavedPlan } from "@/lib/types";
 
 function errorResponse(error: unknown, startedAt: number) {
@@ -63,8 +64,17 @@ export async function POST(request: NextRequest) {
   const startedAt = Date.now();
   try {
     const user = await requireApiUser(request);
-    const plan = readPlan(await request.json());
-    const status = await createGoogleCalendarEvent(user.id, plan);
+    const raw = await request.json() as Partial<SavedPlan> & { sourceKind?: string; sourceId?: string; syncToGoogle?: boolean; location?: string; timeZone?: string; tentative?: boolean; recurrenceRule?: string };
+    const plan = readPlan(raw);
+    const status = await createCalendarEvent(user.id, {
+      title: plan.title, date: plan.date, startLabel: plan.startLabel, endLabel: plan.endLabel,
+      recurrence: plan.recurrence, recurrenceRule: raw.recurrenceRule ?? plan.customRecurrence,
+      category: plan.category, priority: plan.priority, notes: plan.notes, allDay: plan.allDay,
+      location: raw.location, timeZone: raw.timeZone, tentative: raw.tentative,
+      sourceKind: (["manual","file","text","gmail","drive","task","habit","project","assistant"].includes(String(raw.sourceKind)) ? raw.sourceKind : "manual") as "manual" | "file" | "text" | "gmail" | "drive" | "task" | "habit" | "project" | "assistant",
+      sourceId: String(raw.sourceId ?? plan.id), syncToGoogle: Boolean(raw.syncToGoogle),
+      googleAccountId: plan.googleAccountId, googleCalendarId: plan.googleCalendarId,
+    });
     console.info(
       JSON.stringify({
         service: "google-calendar-events",
@@ -105,6 +115,8 @@ export async function DELETE(request: NextRequest) {
       googleCalendarId?: string;
       googleEventId?: string;
       googleAccountId?: string;
+      canonicalEventId?: string;
+      localId?: number;
     };
     if (!body.googleCalendarId || !body.googleEventId) {
       throw new ApiAuthError("Google calendar and event IDs are required.", 400);
@@ -115,6 +127,16 @@ export async function DELETE(request: NextRequest) {
       body.googleEventId,
       body.googleAccountId
     );
+    const supabase = getServiceSupabaseClient();
+    if (!supabase) throw new Error("A Supabase server key is not configured");
+    if (body.canonicalEventId) {
+      const { error: canonicalDeleteError } = await supabase.from("canonical_events").delete().eq("id", body.canonicalEventId).eq("user_id", user.id);
+      if (canonicalDeleteError) throw canonicalDeleteError;
+    } else {
+      const query = supabase.from("plans").delete().eq("user_id", user.id).eq("google_calendar_id", body.googleCalendarId).eq("google_event_id", body.googleEventId);
+      const { error: planDeleteError } = body.googleAccountId ? await query.eq("google_account_id", body.googleAccountId) : await query;
+      if (planDeleteError) throw planDeleteError;
+    }
     console.info(
       JSON.stringify({
         service: "google-calendar-events",

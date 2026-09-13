@@ -68,6 +68,7 @@ type AppContextType = {
   calendarActionError: string | null;
   reloadCloud: () => Promise<void>;
   addPlan: (plan: Omit<SavedPlan, "id">) => void;
+  createPlan: (plan: Omit<SavedPlan, "id">, source?: { kind?: "manual" | "task" | "habit" | "project" | "assistant"; id?: string }) => Promise<{ ok: boolean; error?: string; googleError?: string | null }>;
   deletePlan: (id: number) => void;
   setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   addCodingWorkflow: (workflow: Omit<CodingWorkflow, "id" | "createdAt">) => void;
@@ -331,9 +332,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function syncCalendarChange(
     method: "POST" | "PATCH" | "DELETE",
-    plan: SavedPlan
+    plan: SavedPlan,
+    source?: { kind?: "manual" | "task" | "habit" | "project" | "assistant"; id?: string }
   ) {
-    if (!session?.access_token || !profile.gmailConnected) return;
+    if (!session?.access_token) return { ok: true, localOnly: true };
+    if (method !== "POST" && !profile.gmailConnected) return { ok: true, localOnly: true };
     setCalendarActionError(null);
     try {
       const response = await fetch("/api/calendar/events", {
@@ -348,40 +351,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 googleCalendarId: plan.googleCalendarId,
                 googleEventId: plan.googleEventId,
                 googleAccountId: plan.googleAccountId,
+                canonicalEventId: plan.canonicalEventId,
+                localId: plan.id,
               }
-            : plan
+            : { ...plan, sourceKind: source?.kind ?? "manual", sourceId: source?.id ?? String(plan.id), syncToGoogle: profile.gmailConnected }
         ),
       });
-      const body = (await response.json().catch(() => ({}))) as {
-        error?: string;
-      };
+      const body = (await response.json().catch(() => ({}))) as { error?: string; googleError?: string | null };
       if (!response.ok) {
         throw new Error(body.error ?? "Google Calendar could not be updated.");
       }
       await reloadCloud();
+      return { ok: true, ...body };
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Google Calendar could not be updated.";
       console.error("Google Calendar mutation failed:", message);
       setCalendarActionError(message);
+      return { ok: false, error: message };
     }
   }
 
-  function addPlan(plan: Omit<SavedPlan, "id">) {
+  async function createPlan(plan: Omit<SavedPlan, "id">, source?: { kind?: "manual" | "task" | "habit" | "project" | "assistant"; id?: string }) {
     const nextPlan = { id: Date.now(), ...plan };
-    setPlans((prev) => [
-      ...prev,
-      nextPlan,
-    ]);
+    setPlans((prev) => [...prev, nextPlan]);
     if (plan.source !== "google") {
-      void syncCalendarChange("POST", nextPlan);
+      const result = await syncCalendarChange("POST", nextPlan, source);
+      if (!result.ok) setPlans((current) => current.filter((candidate) => candidate.id !== nextPlan.id));
+      return result;
     }
+    return { ok: true };
+  }
+
+  function addPlan(plan: Omit<SavedPlan, "id">) {
+    void createPlan(plan);
   }
 
   function deletePlan(id: number) {
     const plan = plans.find((candidate) => candidate.id === id);
     setPlans((prev) => prev.filter((plan) => plan.id !== id));
-    if (plan?.source === "google" && plan.googleCalendarId && plan.googleEventId) {
+    if (plan?.googleCalendarId && plan.googleEventId) {
       void syncCalendarChange("DELETE", plan);
     }
   }
@@ -479,6 +488,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       calendarActionError,
       reloadCloud,
       addPlan,
+      createPlan,
       deletePlan,
       setChatMessages,
       addCodingWorkflow,
