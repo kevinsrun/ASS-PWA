@@ -771,6 +771,11 @@ body {
 .finance-list>div>div { display:grid; flex:1; gap:.12rem; }
 .finance-list strong,.finance-list b { font-size:.88rem; font-weight:620; }
 .finance-list span { color:var(--muted); font-size:.75rem; text-transform:capitalize; }
+.finance-add-institution { display:flex; width:100%; min-height:3.75rem; align-items:center; gap:.85rem; border-top:1px solid var(--line); padding:.7rem 1rem; color:var(--accent); text-align:left; transition:background .16s ease,opacity .16s ease; }
+.finance-add-institution span { color:inherit; font-size:.88rem; font-weight:620; text-transform:none; }
+.finance-add-institution:hover { background:var(--surface-muted); }
+.finance-add-institution:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.finance-add-institution:disabled { cursor:default; opacity:.55; }
 .finance-assumptions { margin-top:3rem; border-radius:1.25rem; background:var(--surface-solid); padding:0 1rem; }
 .finance-assumptions summary { min-height:3.75rem; padding-top:1.25rem; cursor:pointer; font-size:.9rem; font-weight:620; }
 .finance-assumptions form { display:grid; grid-template-columns:1fr 1fr; gap:.65rem; padding:0 0 1rem; }

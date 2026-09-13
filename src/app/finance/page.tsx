@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AlertCircle, ArrowLeft, Building2, RefreshCw, ShieldCheck, WalletCards } from "lucide-react";
+import { AlertCircle, ArrowLeft, Building2, Plus, RefreshCw, ShieldCheck, WalletCards } from "lucide-react";
 import { usePlaidLink } from "react-plaid-link";
 import type { PlaidLinkOnSuccess } from "react-plaid-link";
 import { useAuth } from "@/providers/AuthProvider";
@@ -194,6 +194,10 @@ export default function FinancePage() {
               {dashboard.institutions?.map((institution) => (
                 <div key={institution.id}><Building2 size={19} /><div><strong>{institution.institution_name || "Connected institution"}</strong><span>{institution.error_message || institution.status}</span></div></div>
               ))}
+              <button className="finance-add-institution" type="button" onClick={() => void connect()} disabled={busy}>
+                <Plus size={19} />
+                <span>{busy ? "Opening Plaid…" : "Add institution"}</span>
+              </button>
             </div>
           </section>
 
