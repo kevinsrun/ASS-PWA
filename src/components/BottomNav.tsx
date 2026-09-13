@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, Home, MessageCircle, Rows3, UserRound } from "lucide-react";
+import { CalendarDays, Home, Inbox, MessageCircle, Rows3, WalletCards } from "lucide-react";
 
 const items = [
   { href: "/", label: "Home", icon: Home },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
+  { href: "/inbox", label: "Inbox", icon: Inbox },
   { href: "/todos", label: "Projects", icon: Rows3 },
+  { href: "/finance", label: "Finance", icon: WalletCards },
   { href: "/chat", label: "Chat", icon: MessageCircle },
-  { href: "/profile", label: "Profile", icon: UserRound },
 ];
 
 export default function BottomNav() {

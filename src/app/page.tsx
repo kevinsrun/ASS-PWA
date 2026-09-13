@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowRight, CalendarDays, Check, Sparkles, Plus } from "lucide-react";
+import { ArrowRight, CalendarDays, Check, Sparkles, UserRound } from "lucide-react";
 import type { EmailIntelligenceItem } from "@/lib/types";
 import { useAppContext } from "@/providers/AppProvider";
 import { useAuth } from "@/providers/AuthProvider";
@@ -57,7 +57,7 @@ export default function Home() {
           <p>{new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(new Date())}</p>
           <h1>{greeting()}, {profile.displayName || "Kevin"}</h1>
         </div>
-        <Link href="/todos" aria-label="Add a task"><Plus size={21} /></Link>
+        <Link href="/profile" aria-label="Open profile"><UserRound size={21} /></Link>
       </header>
 
       <section className="focus-surface" aria-labelledby="focus-title">

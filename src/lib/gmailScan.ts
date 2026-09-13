@@ -274,8 +274,23 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
         };
       });
       if (rows.length > 0) {
-        const { error } = await supabase.from("email_suggestions").upsert(rows, { onConflict: "user_id,google_account_id,external_id" });
+        const { data: savedSuggestions, error } = await supabase.from("email_suggestions").upsert(rows, { onConflict: "user_id,google_account_id,external_id" }).select("id,external_id,intelligence_type,action_required,confidence,conflict_details,recommendations,status");
         if (error) throw error;
+        const emailActions = (savedSuggestions ?? []).filter((row) => row.intelligence_type !== "no_action").map((row) => ({
+          user_id: userId,
+          email_suggestion_id: row.id,
+          action_type: ["meeting", "club_event", "interview", "travel"].includes(String(row.intelligence_type)) ? "event_decision" : "review",
+          required: Boolean(row.action_required),
+          confidence: Math.max(0, Math.min(1, Number(row.confidence) || 0)),
+          conflict_details: Array.isArray(row.conflict_details) ? row.conflict_details : [],
+          recommendation: Array.isArray(row.recommendations) ? String(row.recommendations[0] ?? "") || null : null,
+          status: row.status === "pending" ? "pending" : "ignored",
+          updated_at: processedAt,
+        }));
+        if (emailActions.length) {
+          const { error: actionError } = await supabase.from("email_action_items").upsert(emailActions, { onConflict: "user_id,email_suggestion_id" });
+          if (actionError) throw actionError;
+        }
         const actionable = rows.filter((row) => row.action_required && row.confidence >= 0.82 && row.intelligence_type !== "no_action");
         const taskTypes = new Set(["task", "deadline", "reminder", "financial_aid", "invoice", "scholarship", "research", "project_update"]);
         const taskRows = actionable.filter((row) => taskTypes.has(row.intelligence_type)).map((row) => ({
