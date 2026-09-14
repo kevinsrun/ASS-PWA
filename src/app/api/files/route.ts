@@ -145,6 +145,7 @@ export async function POST(request: NextRequest) {
         title: item.title, description: item.description, due_at: item.dueAt, duration_minutes: item.durationMinutes,
         time_zone: item.timeZone, recurrence_rule: item.recurrenceRule, location: item.location,
         confidence: item.confidence, required: item.required, payload: item.payload,
+        optionality: item.optionality, attendance_policy: item.attendancePolicy, classification_reason: item.classificationReason,
       }))).select("id,required,confidence,item_type,review_status");
       if (itemsError) throw itemsError;
       insertedItems = data ?? [];

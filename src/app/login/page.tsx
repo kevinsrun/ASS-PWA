@@ -6,7 +6,7 @@ import { useAuth } from "@/providers/AuthProvider";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { configured, signIn, signUp } = useAuth();
+  const { configured, signIn, signUp, signInWithGoogle } = useAuth();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -37,6 +37,12 @@ export default function LoginPage() {
     router.push("/profile");
   }
 
+  async function google() {
+    setLoading(true); setMessage("");
+    const error = await signInWithGoogle();
+    if (error) { setMessage(`Google sign-in failed: ${error}`); setLoading(false); }
+  }
+
   return (
     <main className="auth-page">
       <header className="auth-header">
@@ -51,6 +57,11 @@ export default function LoginPage() {
             Supabase environment variables are missing. Local mode still works.
           </div>
         )}
+
+        <button type="button" className="google-auth-button" disabled={!configured || loading} onClick={google}>
+          <span aria-hidden="true">G</span>{loading ? "Connecting…" : "Continue with Google"}
+        </button>
+        <div className="auth-divider"><span>or</span></div>
 
         <div className="ass-segmented">
           {(["signin", "signup"] as const).map((item) => (

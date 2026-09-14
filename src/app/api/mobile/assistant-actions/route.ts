@@ -1,0 +1,2 @@
+import { NextRequest, NextResponse } from "next/server"; import { requireApiUser } from "@/lib/serverAuth"; import { mobileSnapshot } from "@/lib/mobileApi";
+export async function GET(request: NextRequest) { try { const user = await requireApiUser(request); return NextResponse.json({ actions: (await mobileSnapshot(user.id)).assistantActions }); } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Actions failed." }, { status: 401 }); } }

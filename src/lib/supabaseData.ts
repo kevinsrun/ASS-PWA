@@ -93,6 +93,12 @@ type PlanRow = {
   google_updated_at?: string | null;
   all_day?: boolean | null;
   canonical_event_id?: string | null;
+  optionality?: SavedPlan["optionality"] | null;
+  attendance_policy?: SavedPlan["attendancePolicy"] | null;
+  classification_confidence?: number | string | null;
+  classification_reason?: string | null;
+  blocking_status?: SavedPlan["blockingStatus"] | null;
+  source_label?: string | null;
 };
 
 function hasCoreData(snapshot: CloudSnapshot) {
@@ -205,6 +211,9 @@ export async function loadCloudSnapshot(userId: string): Promise<CloudSnapshot> 
         googleUpdatedAt: plan.google_updated_at ?? undefined,
         allDay: Boolean(plan.all_day),
         canonicalEventId: plan.canonical_event_id ?? undefined,
+        optionality: plan.optionality ?? "unknown", attendancePolicy: plan.attendance_policy ?? "not_specified",
+        classificationConfidence: Number(plan.classification_confidence ?? 0), classificationReason: plan.classification_reason ?? undefined,
+        blockingStatus: plan.blocking_status ?? "busy", sourceLabel: plan.source_label ?? undefined,
       })),
   };
 }
@@ -362,5 +371,8 @@ function planToRow(plan: SavedPlan) {
     google_updated_at: plan.googleUpdatedAt ?? null,
     all_day: plan.allDay ?? false,
     canonical_event_id: plan.canonicalEventId ?? null,
+    optionality: plan.optionality ?? "unknown", attendance_policy: plan.attendancePolicy ?? "not_specified",
+    classification_confidence: plan.classificationConfidence ?? 0, classification_reason: plan.classificationReason ?? null,
+    blocking_status: plan.blockingStatus ?? "busy", source_label: plan.sourceLabel ?? null,
   };
 }

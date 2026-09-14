@@ -11,6 +11,7 @@ export type CanonicalGoogleEvent = {
   etag?: string;
   status?: string;
   updated?: string;
+  transparency?: string;
   start: { date?: string; dateTime?: string; timeZone?: string };
   end: { date?: string; dateTime?: string; timeZone?: string };
   organizer?: { email?: string };
@@ -249,6 +250,9 @@ export async function upsertCanonicalEvent(values: {
     color: plan.google_color ?? null,
     last_seen_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
+    optionality: event.status === "tentative" ? "tentative" : "unknown",
+    blocking_status: event.transparency === "transparent" || Boolean(event.start.date) ? "free" : "busy",
+    source_label: "Google Calendar",
   };
   if (canonicalId) {
     const { error } = await supabase.from("canonical_events").update(canonicalRow).eq("id", canonicalId).eq("user_id", userId);
@@ -293,6 +297,9 @@ export async function upsertCanonicalEvent(values: {
     user_id: userId,
     local_id: canonicalPlanLocalId(canonicalId),
     canonical_event_id: canonicalId,
+    optionality: event.status === "tentative" ? "tentative" : "unknown",
+    blocking_status: event.transparency === "transparent" || Boolean(event.start.date) ? "free" : "busy",
+    source_label: "Google Calendar",
   }, { onConflict: "user_id,canonical_event_id" });
   if (planError) throw planError;
 

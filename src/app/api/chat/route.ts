@@ -43,12 +43,13 @@ export async function POST(request: NextRequest) {
     }
     const message = String(body.message ?? "").trim();
     if (!message) throw new ApiAuthError("A chat message is required.", 400);
-    const [plans, todos, profile] = await Promise.all([
+    const [plans, todos, profile, memory] = await Promise.all([
       supabase.from("plans").select("local_id,canonical_event_id,title,date,start_label,end_label,category,priority,source,google_event_id").eq("user_id", user.id).order("date").limit(300),
       supabase.from("todos").select("local_id,title,due_date,priority,done").eq("user_id", user.id).eq("done", false).limit(200),
       supabase.from("profiles").select("display_name,primary_email,gmail_connected").eq("user_id", user.id).maybeSingle(),
+      supabase.from("personal_memory").select("kind,category,statement,confidence,importance").eq("user_id", user.id).eq("active", true).order("importance", { ascending: false }).limit(40),
     ]);
-    const queryError = [plans, todos, profile].find((result) => result.error)?.error;
+    const queryError = [plans, todos, profile, memory].find((result) => result.error)?.error;
     if (queryError) throw queryError;
     await supabase.from("assistant_action_runs").insert({ id: runId, user_id: user.id, request_text: message });
     const prompt = `You are ASS, a concise executive assistant. Return strict JSON only with shape {"reply":"...","actions":[]}.
@@ -63,6 +64,7 @@ Do not move classes, labs, exams, work, interviews, or required meetings unless 
 Calendar: ${JSON.stringify(plans.data ?? [])}
 Open tasks: ${JSON.stringify(todos.data ?? [])}
 Profile: ${JSON.stringify(profile.data ?? {})}
+Personal memory (use this to rank importance and recommendations; never override explicit user instructions): ${JSON.stringify(memory.data ?? [])}
 Recent chat: ${JSON.stringify((body.messages ?? []).slice(-12))}
 User: ${message}`;
     let generation;

@@ -934,3 +934,16 @@ body {
   .month-calendar,.calendar-surface { box-shadow:0 1px 0 rgba(255,255,255,.035) !important; }
   .month-popover { box-shadow:0 18px 50px rgba(0,0,0,.46); }
 }
+/* Authentication uses the same semantic surfaces in light and dark appearances. */
+.google-auth-button{width:100%;min-height:48px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--foreground);display:flex;align-items:center;justify-content:center;gap:.7rem;font-weight:600;transition:background .18s ease,transform .18s ease,border-color .18s ease}
+.google-auth-button:hover{background:var(--surface-strong);border-color:var(--muted)}
+.google-auth-button:active{transform:scale(.99)}
+.google-auth-button:focus-visible{outline:3px solid color-mix(in srgb,var(--blue) 30%,transparent);outline-offset:2px}
+.google-auth-button:disabled{opacity:.55}
+.google-auth-button>span{font-size:1.1rem;font-weight:700;color:var(--blue)}
+.auth-divider{display:flex;align-items:center;gap:.8rem;margin:1rem 0;color:var(--muted);font-size:.78rem}
+.auth-divider:before,.auth-divider:after{content:"";height:1px;background:var(--line);flex:1}
+.calendar-event-optional{opacity:.62;border-left-style:dashed!important}
+.calendar-event-recommended:after{content:"";position:absolute;right:7px;top:7px;width:5px;height:5px;border-radius:999px;background:currentColor;opacity:.48}
+.calendar-event-tentative{opacity:.72;border-style:dashed!important}
+.calendar-event-required{opacity:1}

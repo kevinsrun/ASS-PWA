@@ -64,6 +64,7 @@ export default function InboxPage() {
   const { session } = useAuth();
   const { reloadCloud } = useAppContext();
   const inputRef = useRef<HTMLInputElement>(null);
+  const chatGPTRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<ImportedFile[]>([]);
   const [texts, setTexts] = useState<ImportedText[]>([]);
   const [emailItems, setEmailItems] = useState<EmailIntelligenceItem[]>([]);
@@ -169,6 +170,18 @@ export default function InboxPage() {
     finally { setBusy(null); }
   }
 
+  async function importChatGPT(file?: File) {
+    if (!session?.access_token || !file) return;
+    setBusy("chatgpt-import"); setError(null); setNotice(null);
+    try {
+      const form = new FormData(); form.set("file", file);
+      const response = await fetch("/api/imports/chatgpt", { method: "POST", headers: headers(), body: form }); const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not import ChatGPT history");
+      setNotice(`Imported ${body.conversations} conversations and ${body.userMessages} of your messages. Learned ${body.memories} explicit preferences or goals.`);
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not import ChatGPT history"); }
+    finally { setBusy(null); if (chatGPTRef.current) chatGPTRef.current.value = ""; }
+  }
+
   async function review(itemId: string, action: "approve" | "reject") {
     setBusy(itemId);
     setError(null);
@@ -245,6 +258,8 @@ export default function InboxPage() {
       </section>
 
       {driveAccounts.length ? <section className="drive-import-card"><div><strong>Google Drive</strong><small>Browse only files in “Grow Up”; nothing is imported until you choose it.</small></div><div><select aria-label="Google Drive account" value={driveAccountId} onChange={(event) => { setDriveAccountId(event.target.value); setDriveFiles([]); }}>{driveAccounts.map((account) => <option key={account.id} value={account.id}>{account.email || account.name || "Google account"}</option>)}</select><button type="button" disabled={busy === "drive-browse"} onClick={() => void browseDrive()}>{busy === "drive-browse" ? "Opening…" : "Browse Grow Up"}</button></div>{driveFiles.length ? <ul>{driveFiles.map((file) => <li key={file.id}><span><strong>{file.name}</strong><small>{file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : human(file.mimeType)}</small></span><button type="button" disabled={busy === `drive:${file.id}`} onClick={() => void importDriveFile(file.id)}>{busy === `drive:${file.id}` ? "Importing…" : "Import"}</button></li>)}</ul> : null}</section> : null}
+
+      <section className="drive-import-card"><div><strong>ChatGPT history</strong><small>Import conversations.json or the downloaded export ZIP. Only your messages teach writing style.</small></div><div><button type="button" disabled={busy === "chatgpt-import"} onClick={() => chatGPTRef.current?.click()}>{busy === "chatgpt-import" ? "Learning…" : "Choose export"}</button></div><input ref={chatGPTRef} className="visually-hidden" type="file" accept=".json,.zip,application/json,application/zip" onChange={(event) => void importChatGPT(event.target.files?.[0])} /></section>
 
       {error ? <div className="inbox-error" role="alert"><AlertCircle size={18} /><span>{error}</span></div> : null}
       {notice ? <div className="inbox-notice" role="status"><Check size={18} /><span>{notice}</span></div> : null}

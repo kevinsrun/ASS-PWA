@@ -16,7 +16,7 @@ export type FileAnalysis = {
   confidence: number;
   summary: string;
   structuredData: Record<string, unknown>;
-  items: Array<{ type: ExtractionItemType; normalizedType: typeof normalizedExtractionTypes[number]; title: string; description: string; dueAt: string | null; durationMinutes: number | null; timeZone: string | null; recurrenceRule: string | null; location: string | null; confidence: number; required: boolean; payload: Record<string, unknown> }>;
+  items: Array<{ type: ExtractionItemType; normalizedType: typeof normalizedExtractionTypes[number]; title: string; description: string; dueAt: string | null; durationMinutes: number | null; timeZone: string | null; recurrenceRule: string | null; location: string | null; confidence: number; required: boolean; optionality: "required" | "recommended" | "optional" | "tentative" | "unknown"; attendancePolicy: "mandatory_attendance" | "graded_participation" | "attendance_recommended" | "attendance_optional" | "not_specified"; classificationReason: string; payload: Record<string, unknown> }>;
 };
 
 function clamp(value: unknown) { return Math.max(0, Math.min(1, Number(value) || 0)); }
@@ -36,7 +36,7 @@ function textFor(file: { name: string; mimeType: string; buffer: Buffer }) {
 export async function analyzeFile(file: { name: string; mimeType: string; buffer: Buffer }): Promise<FileAnalysis> {
   const prompt = `You are the file intelligence layer of ASS, a private life operating system. Analyze the attached file without inventing facts.
 Return only strict JSON with this shape:
-{"classification":"syllabus|assignment|lecture_notes|reading|dataset|research_paper|financial_document|form|schedule|project_file|unknown","confidence":0.0,"summary":"concise","structuredData":{},"items":[{"type":"course|assignment|deadline|event|office_hours|policy|material|reading|dataset_finding|task|project_update","normalizedType":"course|task|project|calendar_event|deadline|study_block|reference|ignore","title":"...","description":"...","dueAt":"ISO-8601 or null","durationMinutes":60,"timeZone":"IANA zone or null","recurrenceRule":"RRULE or null","location":"location or null","confidence":0.0,"required":false,"payload":{}}]}
+{"classification":"syllabus|assignment|lecture_notes|reading|dataset|research_paper|financial_document|form|schedule|project_file|unknown","confidence":0.0,"summary":"concise","structuredData":{},"items":[{"type":"course|assignment|deadline|event|office_hours|policy|material|reading|dataset_finding|task|project_update","normalizedType":"course|task|project|calendar_event|deadline|study_block|reference|ignore","title":"...","description":"...","dueAt":"ISO-8601 or null","durationMinutes":60,"timeZone":"IANA zone or null","recurrenceRule":"RRULE or null","location":"location or null","confidence":0.0,"required":false,"optionality":"required|recommended|optional|tentative|unknown","attendancePolicy":"mandatory_attendance|graded_participation|attendance_recommended|attendance_optional|not_specified","classificationReason":"brief evidence-based reason","payload":{}}]}
 For syllabi, structuredData should include courseName, professor, officeHours, gradingPolicy, attendancePolicy, examDates, assignmentSchedule, readingSchedule, latePolicy, requiredMaterials, and importantDeadlines when present.
 For assignments, include title, dueDate, instructions, estimatedMinutes, difficulty, deliverables, rubric, and submissionMethod.
 For datasets, include columns, rowCount, schema, possibleUses, summaryStatistics, and dataQualityIssues.
@@ -60,7 +60,9 @@ Create only actionable or genuinely useful items. File name: ${file.name}. Curre
     if (!extractionItemTypes.includes(item.type as ExtractionItemType) || !String(item.title ?? "").trim()) return [];
     const dueAt = safeDate(item.dueAt);
     const normalizedType = normalizedExtractionTypes.includes(item.normalizedType as typeof normalizedExtractionTypes[number]) ? item.normalizedType as typeof normalizedExtractionTypes[number] : defaultNormalizedType(String(item.type), dueAt);
-    return [{ type: item.type as ExtractionItemType, normalizedType, title: String(item.title).slice(0, 240), description: String(item.description ?? "").slice(0, 4000), dueAt, durationMinutes: item.durationMinutes ? Math.max(5, Math.min(10080, Number(item.durationMinutes))) : null, timeZone: item.timeZone ? String(item.timeZone).slice(0, 100) : null, recurrenceRule: item.recurrenceRule ? String(item.recurrenceRule).slice(0, 500) : null, location: item.location ? String(item.location).slice(0, 500) : null, confidence: clamp(item.confidence), required: Boolean(item.required), payload: typeof item.payload === "object" && item.payload ? item.payload as Record<string, unknown> : {} }];
+    const optionality = ["required","recommended","optional","tentative","unknown"].includes(String(item.optionality)) ? String(item.optionality) as FileAnalysis["items"][number]["optionality"] : Boolean(item.required) ? "required" : "unknown";
+    const attendancePolicy = ["mandatory_attendance","graded_participation","attendance_recommended","attendance_optional","not_specified"].includes(String(item.attendancePolicy)) ? String(item.attendancePolicy) as FileAnalysis["items"][number]["attendancePolicy"] : "not_specified";
+    return [{ type: item.type as ExtractionItemType, normalizedType, title: String(item.title).slice(0, 240), description: String(item.description ?? "").slice(0, 4000), dueAt, durationMinutes: item.durationMinutes ? Math.max(5, Math.min(10080, Number(item.durationMinutes))) : null, timeZone: item.timeZone ? String(item.timeZone).slice(0, 100) : null, recurrenceRule: item.recurrenceRule ? String(item.recurrenceRule).slice(0, 500) : null, location: item.location ? String(item.location).slice(0, 500) : null, confidence: clamp(item.confidence), required: optionality === "required", optionality, attendancePolicy, classificationReason: String(item.classificationReason ?? "Not specified in source").slice(0, 1000), payload: typeof item.payload === "object" && item.payload ? item.payload as Record<string, unknown> : {} }];
   }) : [];
   return { classification, confidence: clamp(raw.confidence), summary: String(raw.summary ?? "").slice(0, 2000), structuredData: typeof raw.structuredData === "object" && raw.structuredData ? raw.structuredData as Record<string, unknown> : {}, items };
 }
@@ -127,6 +129,10 @@ export async function commitExtractionItem(userId: string, itemId: string, overr
       recurrenceRule, category: "school" as const, priority: item.required ? "high" as const : "medium" as const,
       notes: String(item.description ?? ""), location: String(item.location ?? payload.location ?? "") || null,
       sourceKind: item.imported_file_id ? "file" as const : "text" as const, sourceId: itemId, syncToGoogle: Boolean(googleAccounts),
+      optionality: item.optionality ?? (item.required ? "required" : "unknown"), attendancePolicy: item.attendance_policy ?? "not_specified",
+      classificationConfidence: Number(item.confidence ?? 0), classificationReason: item.classification_reason ?? null,
+      blockingStatus: item.item_type === "deadline" || allDay || item.optionality === "optional" || item.optionality === "tentative" ? "free" as const : "busy" as const,
+      sourceLabel: item.imported_file_id ? "syllabus/file" : "pasted text",
     };
     console.info(JSON.stringify({ service: "file-conversion", stage: "calendar-payload", itemId, payload: calendarPayload }));
     if (normalizedType === "deadline") {

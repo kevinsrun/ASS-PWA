@@ -18,6 +18,7 @@ type AuthContextType = {
   user: User | null;
   signIn: (email: string, password: string) => Promise<string | null>;
   signUp: (email: string, password: string) => Promise<string | null>;
+  signInWithGoogle: () => Promise<string | null>;
   signOut: () => Promise<void>;
 };
 
@@ -64,6 +65,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           email,
           password,
         });
+        return error?.message ?? null;
+      },
+      async signInWithGoogle() {
+        if (!supabase) return "Supabase is not configured.";
+        const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/profile` } });
         return error?.message ?? null;
       },
       async signOut() {

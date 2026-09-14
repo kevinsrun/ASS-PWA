@@ -56,6 +56,12 @@ export type SavedPlan = {
   googleUpdatedAt?: string;
   allDay?: boolean;
   canonicalEventId?: string;
+  optionality?: "required" | "recommended" | "optional" | "tentative" | "unknown";
+  attendancePolicy?: "mandatory_attendance" | "graded_participation" | "attendance_recommended" | "attendance_optional" | "not_specified";
+  classificationConfidence?: number;
+  classificationReason?: string;
+  blockingStatus?: "busy" | "free";
+  sourceLabel?: string;
 };
 
 export type GoogleCalendarSummary = {

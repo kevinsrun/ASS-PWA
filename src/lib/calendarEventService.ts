@@ -25,6 +25,12 @@ export type CalendarEventInput = {
   syncToGoogle?: boolean;
   googleAccountId?: string;
   googleCalendarId?: string;
+  optionality?: "required" | "recommended" | "optional" | "tentative" | "unknown";
+  attendancePolicy?: "mandatory_attendance" | "graded_participation" | "attendance_recommended" | "attendance_optional" | "not_specified";
+  classificationConfidence?: number;
+  classificationReason?: string | null;
+  blockingStatus?: "busy" | "free";
+  sourceLabel?: string | null;
 };
 
 export type CalendarEventResult = {
@@ -111,6 +117,9 @@ export async function createCalendarEvent(userId: string, input: CalendarEventIn
     status: event.tentative ? "tentative" : "confirmed", recurrence_rule: event.recurrenceRule ?? null,
     deleted_at: null, deleted_by_user: false, hidden_from_calendar: false, deletion_reason: null,
     last_seen_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    optionality: event.optionality ?? (event.tentative ? "tentative" : "unknown"), attendance_policy: event.attendancePolicy ?? "not_specified",
+    classification_confidence: event.classificationConfidence ?? 0, classification_reason: event.classificationReason ?? null,
+    blocking_status: event.blockingStatus ?? (event.allDay ? "free" : "busy"), source_label: event.sourceLabel ?? event.sourceKind,
   };
   const { data: canonical, error: canonicalError } = await supabase.from("canonical_events").upsert(canonicalRow, { onConflict: "user_id,fingerprint" }).select("id").single();
   if (canonicalError || !canonical) throw canonicalError ?? new Error("Canonical event was not created");
@@ -127,6 +136,9 @@ export async function createCalendarEvent(userId: string, input: CalendarEventIn
     user_id: userId, local_id: plan.id, title: plan.title, date: plan.date, start_label: plan.startLabel, end_label: plan.endLabel,
     recurrence: plan.recurrence, category: plan.category, priority: plan.priority, notes: plan.notes, custom_recurrence: plan.customRecurrence,
     source: "ass", all_day: plan.allDay, canonical_event_id: canonicalId, updated_at: new Date().toISOString(),
+    optionality: event.optionality ?? (event.tentative ? "tentative" : "unknown"), attendance_policy: event.attendancePolicy ?? "not_specified",
+    classification_confidence: event.classificationConfidence ?? 0, classification_reason: event.classificationReason ?? null,
+    blocking_status: event.blockingStatus ?? (event.allDay ? "free" : "busy"), source_label: event.sourceLabel ?? event.sourceKind,
   }, { onConflict: "user_id,canonical_event_id" });
   if (planError) throw planError;
   const { error: sourceError } = await supabase.from("event_sources").upsert({

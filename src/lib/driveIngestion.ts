@@ -27,7 +27,7 @@ export async function ingestDriveFile(userId: string, accountId: string, fileId:
     if (extractionError || !extraction) throw extractionError ?? new Error("Could not save Drive analysis");
     let items: Array<{ id: string; required: boolean; confidence: number; item_type: string }> = [];
     if (analysis.items.length) {
-      const { data, error } = await supabase.from("extraction_items").insert(analysis.items.map((item) => ({ user_id: userId, imported_source_id: sourceId, extraction_id: extraction.id, item_type: item.type, normalized_type: item.normalizedType, title: item.title, description: item.description, due_at: item.dueAt, duration_minutes: item.durationMinutes, time_zone: item.timeZone, recurrence_rule: item.recurrenceRule, location: item.location, confidence: item.confidence, required: item.required, payload: item.payload }))).select("id,required,confidence,item_type");
+      const { data, error } = await supabase.from("extraction_items").insert(analysis.items.map((item) => ({ user_id: userId, imported_source_id: sourceId, extraction_id: extraction.id, item_type: item.type, normalized_type: item.normalizedType, title: item.title, description: item.description, due_at: item.dueAt, duration_minutes: item.durationMinutes, time_zone: item.timeZone, recurrence_rule: item.recurrenceRule, location: item.location, confidence: item.confidence, required: item.required, optionality: item.optionality, attendance_policy: item.attendancePolicy, classification_reason: item.classificationReason, payload: item.payload }))).select("id,required,confidence,item_type");
       if (error) throw error;
       items = data ?? [];
     }

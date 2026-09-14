@@ -218,14 +218,14 @@ function getVisiblePlans(plans: SavedPlan[], dateKey: string) {
 }
 
 function getConflicts(plans: SavedPlan[], dateKey: string) {
-  const visible = getVisiblePlans(plans, dateKey).filter((plan) => !plan.allDay);
+  const visible = getVisiblePlans(plans, dateKey).filter((plan) => !plan.allDay && plan.blockingStatus !== "free" && !["optional", "tentative"].includes(plan.optionality ?? "unknown"));
   const conflicts: Array<{ a: SavedPlan; b: SavedPlan }> = [];
 
   visible.forEach((plan, index) => {
     const a = planRange(plan);
     visible.slice(index + 1).forEach((candidate) => {
       const b = planRange(candidate);
-      if (rangesOverlap(a.start, a.end, b.start, b.end)) {
+      if (plan.canonicalEventId !== candidate.canonicalEventId && Math.min(a.end, b.end) - Math.max(a.start, b.start) > 0) {
         conflicts.push({ a: plan, b: candidate });
       }
     });
@@ -1705,7 +1705,7 @@ export default function CalendarPage() {
                               onDragStart={(event) =>
                                 event.dataTransfer.setData("text/plain", String(plan.id))
                               }
-                              className={`calendar-event absolute z-10 overflow-hidden rounded-lg border-l-4 px-2 py-2 shadow-sm ${categoryMeta.block} ${
+                              className={`calendar-event calendar-event-${plan.optionality ?? "unknown"} absolute z-10 overflow-hidden rounded-lg border-l-4 px-2 py-2 shadow-sm ${categoryMeta.block} ${
                                 hasConflict ? "ring-2 ring-amber-300" : ""
                               }`}
                               style={{

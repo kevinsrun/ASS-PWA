@@ -1,0 +1,2 @@
+import { NextRequest, NextResponse } from "next/server"; import { requireApiUser } from "@/lib/serverAuth"; import { mobileSnapshot } from "@/lib/mobileApi";
+export async function GET(request: NextRequest) { try { const user = await requireApiUser(request); return NextResponse.json({ events: (await mobileSnapshot(user.id)).upcomingEvents }); } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Calendar failed." }, { status: 401 }); } }

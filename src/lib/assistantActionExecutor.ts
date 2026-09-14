@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { addMinutesToLabel, labelToMinutes } from "@/lib/dateTime";
+import { conflictsForInterval } from "@/lib/conflictEngine";
 import { deleteCanonicalEvent } from "@/lib/calendarDeletion";
 import { createCanonicalEvent, createDeadline, createEmailDraft, createEventDecision, createTask } from "@/lib/objectCreation";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
@@ -38,24 +38,15 @@ async function conflictCheck(userId: string, action: AssistantAction, timeZone: 
   if (!action.start || !action.end) return { conflicts: [] as string[], suggestedAction: undefined as AssistantAction | undefined };
   const start = toParts(action.start, timeZone); const end = toParts(action.end, timeZone);
   if (end.instant <= start.instant) throw new Error("End time must be after start time.");
-  const supabase = getServiceSupabaseClient()!;
-  const { data, error } = await supabase.from("plans").select("canonical_event_id,title,start_label,end_label,category,priority").eq("user_id", userId).eq("date", start.date).eq("all_day", false);
-  if (error) throw error;
-  const startMinutes = labelToMinutes(start.label); const endMinutes = labelToMinutes(end.label);
-  const overlaps = (data ?? []).filter((plan) => String(plan.canonical_event_id ?? "") !== String(action.canonicalEventId ?? "") && startMinutes < labelToMinutes(String(plan.end_label)) && labelToMinutes(String(plan.start_label)) < endMinutes);
-  if (!overlaps.length) return { conflicts: [], suggestedAction: undefined };
-  const latestEnd = Math.max(...overlaps.map((plan) => labelToMinutes(String(plan.end_label))));
+  const checked = await conflictsForInterval(userId, { id: action.canonicalEventId ?? action.sourceId ?? "proposed", title: action.title ?? "Proposed event", startAt: start.instant.toISOString(), endAt: end.instant.toISOString(), blockingStatus: "busy", optionality: "unknown" });
+  if (!checked.conflicts.length) return { conflicts: [], suggestedAction: undefined };
+  const latestEnd = Math.max(...checked.conflicts.map((item) => new Date(item.eventBEnd).getTime()));
   const duration = Math.max(15, Math.round((end.instant.getTime() - start.instant.getTime()) / 60_000));
-  const alternateStart = addMinutesToLabel(`${Math.floor(latestEnd / 60)}:${String(latestEnd % 60).padStart(2, "0")}`, 15);
-  const alternateEnd = addMinutesToLabel(alternateStart, duration);
-  const alternateDate = start.date;
-  const localIso = (label: string) => {
-    const minutes = labelToMinutes(label); const hour = String(Math.floor(minutes / 60)).padStart(2, "0"); const minute = String(minutes % 60).padStart(2, "0");
-    return `${alternateDate}T${hour}:${minute}:00`;
-  };
+  const alternateStart = new Date(latestEnd + 15 * 60_000);
+  const alternateEnd = new Date(alternateStart.getTime() + duration * 60_000);
   return {
-    conflicts: overlaps.map((plan) => `${String(plan.title)} (${String(plan.start_label)}–${String(plan.end_label)})`),
-    suggestedAction: { ...action, start: localIso(alternateStart), end: localIso(alternateEnd) },
+    conflicts: checked.conflicts.map((item) => `${item.eventB} (${new Date(item.eventBStart).toLocaleTimeString([], { timeStyle: "short", timeZone })}–${new Date(item.eventBEnd).toLocaleTimeString([], { timeStyle: "short", timeZone })})`),
+    suggestedAction: { ...action, start: alternateStart.toISOString(), end: alternateEnd.toISOString() },
   };
 }
 
