@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
-import { createCanonicalEvent, createDeadline, createTask } from "@/lib/objectCreation";
+import { createCanonicalEvent, createDeadline, createRecurringAcademicEvent, createTask, markExtractionItemConverted } from "@/lib/objectCreation";
+import { deriveAcademicSchedule } from "@/lib/academicSchedule";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
 import { extractOfficeText } from "@/lib/officeText";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
@@ -77,18 +78,30 @@ function defaultNormalizedType(itemType: string, dueAt: string | null) {
   return "reference";
 }
 
-export async function commitExtractionItem(userId: string, itemId: string, override?: { normalizedType?: string }) {
+export async function commitExtractionItem(userId: string, itemId: string, override?: { normalizedType?: string; force?: boolean }) {
   const supabase = getServiceSupabaseClient();
   if (!supabase) throw new Error("A Supabase server key is not configured");
   const { data: item, error } = await supabase.from("extraction_items").select("*").eq("id", itemId).eq("user_id", userId).single();
   if (error || !item) throw error ?? new Error("Extraction item not found");
-  if (item.review_status === "committed") return item;
+  if (item.review_status === "committed" && item.linked_entity_id && !override?.force) return item;
   const normalizedType = normalizedExtractionTypes.includes(override?.normalizedType as typeof normalizedExtractionTypes[number])
     ? String(override?.normalizedType)
     : String(item.normalized_type ?? defaultNormalizedType(String(item.item_type), item.due_at ? String(item.due_at) : null));
   console.info(JSON.stringify({ service: "file-conversion", stage: "selected", itemId, extractedType: item.item_type, normalizedType, dueAt: item.due_at ?? null }));
-  if (["calendar_event", "deadline", "study_block"].includes(normalizedType) && !item.due_at) {
-    throw new Error(`A date/time is required before this ${normalizedType.replaceAll("_", " ")} can be registered.`);
+  const { data: extraction } = item.extraction_id
+    ? await supabase.from("file_extractions").select("structured_data").eq("id", item.extraction_id).maybeSingle()
+    : { data: null };
+  const { data: importedFile } = item.imported_file_id
+    ? await supabase.from("imported_files").select("linked_course_id").eq("id", item.imported_file_id).eq("user_id", userId).maybeSingle()
+    : { data: null };
+  const payload = typeof item.payload === "object" && item.payload ? item.payload as Record<string, unknown> : {};
+  const academicSchedule = normalizedType === "calendar_event" ? deriveAcademicSchedule({
+    payload, description: item.description, recurrenceRule: item.recurrence_rule,
+    dueAt: item.due_at, durationMinutes: item.duration_minutes,
+    structuredData: extraction?.structured_data as Record<string, unknown> | undefined, createdAt: item.created_at,
+  }) : null;
+  if (["calendar_event", "deadline", "study_block"].includes(normalizedType) && !item.due_at && !academicSchedule) {
+    throw new Error(`A date/time or complete recurring schedule is required before this ${normalizedType.replaceAll("_", " ")} can be registered.`);
   }
   const linkedTypes: string[] = [];
   const linkedIds: string[] = [];
@@ -100,20 +113,19 @@ export async function commitExtractionItem(userId: string, itemId: string, overr
     linkedTypes.push("todo"); linkedIds.push(String(task.localId));
   }
   let calendarResult: Awaited<ReturnType<typeof createCanonicalEvent>> | null = null;
-  if (item.due_at && ["calendar_event", "deadline", "study_block"].includes(normalizedType)) {
-    const at = new Date(item.due_at);
+  if ((item.due_at || academicSchedule) && ["calendar_event", "deadline", "study_block"].includes(normalizedType)) {
+    const at = new Date(item.due_at ?? `${academicSchedule!.startDate}T12:00:00Z`);
     const allDay = at.getUTCHours() === 0 && at.getUTCMinutes() === 0;
     const startLabel = allDay ? "12:00 AM" : at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
     const end = new Date(at.getTime() + (item.duration_minutes ?? 60) * 60_000);
     const endLabel = allDay ? "11:59 PM" : end.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
-    const payload = typeof item.payload === "object" && item.payload ? item.payload as Record<string, unknown> : {};
     const { count: googleAccounts } = await supabase.from("google_tokens").select("id", { count: "exact", head: true }).eq("user_id", userId);
-    const recurrenceRule = String(item.recurrence_rule ?? payload.recurrenceRule ?? "").trim() || null;
+    const recurrenceRule = academicSchedule?.recurrenceRule ?? (String(item.recurrence_rule ?? payload.recurrenceRule ?? "").trim() || null);
     const calendarPayload = {
-      title: String(item.title), date: at.toLocaleDateString("en-CA", { timeZone: String(item.time_zone ?? "America/New_York") }),
-      startLabel, endLabel, allDay, timeZone: String(item.time_zone ?? "America/New_York"), recurrence: recurrenceRule ? "custom" as const : "none" as const,
+      title: String(item.title), date: academicSchedule?.startDate ?? at.toLocaleDateString("en-CA", { timeZone: String(item.time_zone ?? "America/New_York") }),
+      startLabel: academicSchedule?.startLabel ?? startLabel, endLabel: academicSchedule?.endLabel ?? endLabel, allDay: academicSchedule ? false : allDay, timeZone: String(item.time_zone ?? "America/New_York"), recurrence: recurrenceRule ? "custom" as const : "none" as const,
       recurrenceRule, category: "school" as const, priority: item.required ? "high" as const : "medium" as const,
-      notes: String(item.description ?? ""), location: item.location ? String(item.location) : null,
+      notes: String(item.description ?? ""), location: String(item.location ?? payload.location ?? "") || null,
       sourceKind: item.imported_file_id ? "file" as const : "text" as const, sourceId: itemId, syncToGoogle: Boolean(googleAccounts),
     };
     console.info(JSON.stringify({ service: "file-conversion", stage: "calendar-payload", itemId, payload: calendarPayload }));
@@ -122,6 +134,12 @@ export async function commitExtractionItem(userId: string, itemId: string, overr
       calendarResult = deadline.event;
       taskLocalId = deadline.task.localId;
       linkedTypes.push("todo", "deadline"); linkedIds.push(String(deadline.task.localId), deadline.id);
+    } else if (academicSchedule) {
+      const academicKind = item.item_type === "office_hours" ? "office_hours" : /lab/i.test(item.title) ? "lab" : /recitation/i.test(item.title) ? "recitation" : /conference/i.test(item.title) ? "conference" : "lecture";
+      const structured = extraction?.structured_data as Record<string, unknown> | undefined;
+      const recurring = await createRecurringAcademicEvent(userId, { ...calendarPayload, extractionItemId: itemId, academicKind, dayIndexes: academicSchedule.dayIndexes, dayPattern: String(payload.schedule ?? payload.days ?? academicSchedule.dayCodes.join(",")), endDate: academicSchedule.endDate, courseId: importedFile?.linked_course_id ? String(importedFile.linked_course_id) : null, courseName: structured?.courseName ? String(structured.courseName) : null });
+      calendarResult = recurring;
+      linkedTypes.push("academic_recurring_event"); linkedIds.push(recurring.academicRecurringEventId);
     } else {
       calendarResult = await createCanonicalEvent(userId, calendarPayload);
     }
@@ -147,14 +165,18 @@ export async function commitExtractionItem(userId: string, itemId: string, overr
       linkedTypes.push("academic_assignment"); linkedIds.push(String(assignment.id));
     }
   }
-  const now = new Date().toISOString();
   if (!linkedTypes.length && !["reference", "ignore", "course"].includes(normalizedType)) {
     throw new Error(`No destination object was created for ${normalizedType}.`);
   }
+  const links = linkedTypes.map((kind, index) => ({ kind, id: linkedIds[index] }));
+  if (links.length) await markExtractionItemConverted(userId, itemId, links);
+  else {
+    const { error: updateError } = await supabase.from("extraction_items").update({ review_status: "committed", normalized_type: normalizedType, linked_entity_type: normalizedType, linked_entity_id: itemId, conversion_error: null, updated_at: new Date().toISOString() }).eq("id", itemId).eq("user_id", userId);
+    if (updateError) throw updateError;
+  }
   const linkedType = linkedTypes.length ? linkedTypes.join(",") : normalizedType;
   const linkedId = linkedIds.length ? linkedIds.join(",") : itemId;
-  const { data: updated, error: updateError } = await supabase.from("extraction_items").update({ review_status: "committed", normalized_type: normalizedType, linked_entity_type: linkedType, linked_entity_id: linkedId, updated_at: now }).eq("id", itemId).eq("user_id", userId).select("id,review_status,normalized_type,linked_entity_type,linked_entity_id").single();
-  if (updateError) throw updateError;
+  const updated = { id: itemId, review_status: "committed", normalized_type: normalizedType, linked_entity_type: linkedType, linked_entity_id: linkedId };
   console.info(JSON.stringify({ service: "file-conversion", stage: "committed", itemId, normalizedType, linkedType, linkedId, googleSynced: calendarResult?.googleSynced ?? false, googleError: calendarResult?.googleError ?? null, database: updated }));
   return { ...item, ...updated, calendarResult };
 }

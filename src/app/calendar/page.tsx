@@ -43,6 +43,7 @@ import { buildLearningProfile } from "@/lib/learning";
 import { useAppContext } from "@/providers/AppProvider";
 import { useAuth } from "@/providers/AuthProvider";
 import { useCalendarSync } from "@/hooks/useCalendarSync";
+import { recurrenceMatchesDate } from "@/lib/academicSchedule";
 import CalendarSyncIndicator from "@/components/CalendarSyncIndicator";
 
 type OptimizerSuggestion = {
@@ -175,6 +176,7 @@ function isPlanVisibleOnDate(plan: SavedPlan, dateKey: string) {
   if (plan.recurrence === "weekends") return date.getDay() === 0 || date.getDay() === 6;
   if (plan.recurrence === "weekly") return planDate.getDay() === date.getDay();
   if (plan.recurrence === "custom") {
+    if (/RRULE:/i.test(custom) && recurrenceMatchesDate(custom, date)) return true;
     const daysSinceStart = Math.floor(
       (date.getTime() - planDate.getTime()) / 86_400_000
     );
@@ -344,6 +346,14 @@ export default function CalendarPage() {
   const [emailImportStatus, setEmailImportStatus] = useState(
     "Connect Gmail, scan recent messages, or paste an email into a calendar block."
   );
+
+  async function handleDeletePlan(plan: SavedPlan) {
+    const deleteFromGoogle = Boolean(plan.googleEventId)
+      ? window.confirm(`Delete “${plan.title}” from Google Calendar too?\n\nOK deletes it everywhere. Cancel hides it only in ASS.`)
+      : false;
+    const result = await deletePlan(plan.id, { deleteFromGoogle });
+    if (!result.ok) setBuilderMessage(result.error ?? "The event could not be deleted.");
+  }
   const [optimizerSuggestions, setOptimizerSuggestions] = useState<
     OptimizerSuggestion[]
   >([]);
@@ -1392,7 +1402,7 @@ export default function CalendarPage() {
                               </div>
                             </div>
                             <button
-                              onClick={() => deletePlan(plan.id)}
+                              onClick={() => void handleDeletePlan(plan)}
                               className="rounded-full bg-white/70 p-2"
                               aria-label={`Delete ${plan.title}`}
                             >
@@ -1723,7 +1733,7 @@ export default function CalendarPage() {
                                   </div>
                                 </div>
                                 <button
-                                  onClick={() => deletePlan(plan.id)}
+                                  onClick={() => void handleDeletePlan(plan)}
                                   className="rounded-md bg-white/75 p-1 text-slate-600 hover:bg-white hover:text-rose-600"
                                   aria-label={`Delete ${plan.title}`}
                                 >

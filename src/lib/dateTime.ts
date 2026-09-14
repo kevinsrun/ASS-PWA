@@ -25,7 +25,9 @@ export function addMinutesToClock(time: string, minutes: number) {
 }
 
 export function addMinutesToLabel(time: string, minutes: number) {
-  return formatTimeLabel(addMinutesToClock(time, minutes));
+  const base = /\b(?:AM|PM)\b/i.test(time) ? labelToMinutes(time) : clockToMinutes(time);
+  const wrapped = ((base + minutes) % 1440 + 1440) % 1440;
+  return formatTimeLabel(minutesToClock(wrapped));
 }
 
 export function clockToMinutes(time: string) {

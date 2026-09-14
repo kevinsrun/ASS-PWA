@@ -7,6 +7,7 @@ import { plaidConfiguration, syncPlaidForUser } from "@/lib/plaid";
 import { refreshFinanceAlerts } from "@/lib/finance";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import { weatherDecisionContext } from "@/lib/weatherContext";
+import { reconcileExtractedItems } from "@/lib/extractionReconciliation";
 
 export type IntelligenceRunMetrics = {
   accountsScanned: number; emailsScanned: number; calendarEventsScanned: number;
@@ -81,6 +82,11 @@ export async function runIntelligenceSync(triggerKind: "cron" | "manual" = "cron
       } catch (error) { metrics.errors.push(`${accountId.slice(0, 8)} drive: ${error instanceof Error ? error.message : "unknown error"}`); }
     }
     for (const userId of userIds) {
+      try {
+        const reconciliation = await reconcileExtractedItems(userId, "cron");
+        metrics.calendarEventsCreated += reconciliation.created + reconciliation.repaired;
+        metrics.errors.push(...reconciliation.errors.map((item) => `reconcile ${item.title}: ${item.message}`));
+      } catch (error) { metrics.errors.push(`${userId.slice(0, 8)} reconcile: ${error instanceof Error ? error.message : "unknown error"}`); }
       try { metrics.actionItemsCreated += await queueFileFollowups(userId); }
       catch (error) { metrics.errors.push(`${userId.slice(0, 8)} files: ${error instanceof Error ? error.message : "unknown error"}`); }
       if (plaidConfiguration().ready) {

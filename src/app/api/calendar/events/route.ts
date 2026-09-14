@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  deleteGoogleCalendarEvent,
-  updateGoogleCalendarEvent,
-} from "@/lib/googleCalendarSync";
+import { updateGoogleCalendarEvent } from "@/lib/googleCalendarSync";
 import { createCalendarEvent } from "@/lib/calendarEventService";
+import { deleteCanonicalEvent } from "@/lib/calendarDeletion";
 import { ApiAuthError, requireApiUser } from "@/lib/serverAuth";
-import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import type { SavedPlan } from "@/lib/types";
 
 function errorResponse(error: unknown, startedAt: number) {
@@ -57,6 +54,7 @@ function readPlan(value: unknown): SavedPlan {
     googleEtag: plan.googleEtag,
     googleUpdatedAt: plan.googleUpdatedAt,
     allDay: Boolean(plan.allDay),
+    canonicalEventId: plan.canonicalEventId,
   };
 }
 
@@ -117,26 +115,9 @@ export async function DELETE(request: NextRequest) {
       googleAccountId?: string;
       canonicalEventId?: string;
       localId?: number;
+      deleteFromGoogle?: boolean;
     };
-    if (!body.googleCalendarId || !body.googleEventId) {
-      throw new ApiAuthError("Google calendar and event IDs are required.", 400);
-    }
-    const status = await deleteGoogleCalendarEvent(
-      user.id,
-      body.googleCalendarId,
-      body.googleEventId,
-      body.googleAccountId
-    );
-    const supabase = getServiceSupabaseClient();
-    if (!supabase) throw new Error("A Supabase server key is not configured");
-    if (body.canonicalEventId) {
-      const { error: canonicalDeleteError } = await supabase.from("canonical_events").delete().eq("id", body.canonicalEventId).eq("user_id", user.id);
-      if (canonicalDeleteError) throw canonicalDeleteError;
-    } else {
-      const query = supabase.from("plans").delete().eq("user_id", user.id).eq("google_calendar_id", body.googleCalendarId).eq("google_event_id", body.googleEventId);
-      const { error: planDeleteError } = body.googleAccountId ? await query.eq("google_account_id", body.googleAccountId) : await query;
-      if (planDeleteError) throw planDeleteError;
-    }
+    const status = await deleteCanonicalEvent(user.id, body);
     console.info(
       JSON.stringify({
         service: "google-calendar-events",

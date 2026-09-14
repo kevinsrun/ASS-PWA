@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { createCalendarEvent, type CalendarEventInput } from "@/lib/calendarEventService";
 import { addMinutesToLabel } from "@/lib/dateTime";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
+import { timeLabelToSql } from "@/lib/academicSchedule";
 
 function client() {
   const supabase = getServiceSupabaseClient();
@@ -30,6 +31,61 @@ function zonedDate(value: string, timeZone: string) {
 
 export async function createCanonicalEvent(userId: string, input: CalendarEventInput) {
   return createCalendarEvent(userId, input);
+}
+
+export async function createEventSourceLink(userId: string, input: {
+  sourceKind: string; sourceId: string; destinationKind: string; destinationId: string;
+}) {
+  const { error } = await client().from("object_source_links").upsert({
+    user_id: userId, source_kind: input.sourceKind, source_id: input.sourceId,
+    destination_kind: input.destinationKind, destination_id: input.destinationId,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "user_id,source_kind,source_id,destination_kind" });
+  if (error) throw new Error(`Source link registration failed: ${error.message}`);
+}
+
+export async function markExtractionItemConverted(userId: string, itemId: string, links: Array<{ kind: string; id: string }>) {
+  if (!links.length) throw new Error("An extraction cannot be marked converted without a destination object.");
+  const now = new Date().toISOString();
+  for (const link of links) await createEventSourceLink(userId, { sourceKind: "extraction_item", sourceId: itemId, destinationKind: link.kind, destinationId: link.id });
+  const { error } = await client().from("extraction_items").update({
+    review_status: "committed", linked_entity_type: links.map((link) => link.kind).join(","),
+    linked_entity_id: links.map((link) => link.id).join(","), conversion_error: null, updated_at: now,
+  }).eq("id", itemId).eq("user_id", userId);
+  if (error) throw new Error(`Extraction conversion state failed: ${error.message}`);
+}
+
+export async function markExtractionItemIgnored(userId: string, itemId: string, reason = "Ignored by user") {
+  const now = new Date().toISOString();
+  const { error } = await client().from("extraction_items").update({
+    review_status: "rejected", normalized_type: "ignore", ignore_future_imports: true,
+    deleted_at: now, conversion_error: reason, updated_at: now,
+  }).eq("id", itemId).eq("user_id", userId);
+  if (error) throw new Error(`Extraction ignore state failed: ${error.message}`);
+}
+
+export async function createRecurringAcademicEvent(userId: string, input: CalendarEventInput & {
+  extractionItemId?: string; academicKind: "lecture" | "lab" | "recitation" | "office_hours" | "conference" | "other";
+  eventType?: "lecture" | "lab" | "discussion" | "recitation" | "office_hour" | "exam_review" | "conference";
+  dayIndexes: number[]; dayPattern?: string; endDate?: string | null; courseId?: string | null; courseName?: string | null;
+}) {
+  if (!input.recurrenceRule) throw new Error("A recurring academic event requires a recurrence rule.");
+  const event = await createCanonicalEvent(userId, { ...input, recurrence: "custom" });
+  const { data, error } = await client().from("academic_recurring_events").upsert({
+    user_id: userId, extraction_item_id: input.extractionItemId ?? null,
+    source_kind: input.sourceKind, source_id: input.sourceId, canonical_event_id: event.canonicalEventId,
+    title: input.title, academic_kind: input.academicKind, days_of_week: input.dayIndexes,
+    course_id: input.courseId ?? null, course_name: input.courseName ?? null,
+    event_type: input.eventType ?? (input.academicKind === "office_hours" ? "office_hour" : input.academicKind === "other" ? "conference" : input.academicKind),
+    day_pattern: input.dayPattern ?? input.dayIndexes.join(","), timezone: input.timeZone ?? "America/New_York",
+    semester_start: input.date, semester_end: input.endDate ?? null,
+    start_time: timeLabelToSql(input.startLabel || "9:00 AM"), end_time: timeLabelToSql(input.endLabel || "10:00 AM"),
+    start_date: input.date, end_date: input.endDate ?? null, time_zone: input.timeZone ?? "America/New_York",
+    location: input.location ?? null, recurrence_rule: input.recurrenceRule, updated_at: new Date().toISOString(),
+  }, { onConflict: "user_id,source_kind,source_id" }).select("id").single();
+  if (error || !data) throw new Error(`Academic recurrence registration failed: ${error?.message ?? "no row returned"}`);
+  await createEventSourceLink(userId, { sourceKind: input.sourceKind, sourceId: input.sourceId, destinationKind: "academic_recurring_event", destinationId: String(data.id) });
+  return { ...event, academicRecurringEventId: String(data.id) };
 }
 
 export async function createTask(userId: string, input: {

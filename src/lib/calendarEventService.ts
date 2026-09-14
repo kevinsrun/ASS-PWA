@@ -89,6 +89,10 @@ export async function createCalendarEvent(userId: string, input: CalendarEventIn
   const event = normalize(input);
   const supabase = getServiceSupabaseClient();
   if (!supabase) throw new Error("A Supabase server key is not configured");
+  const { data: sourceTombstone, error: tombstoneError } = await supabase.from("event_sources")
+    .select("ignore_future_imports").eq("user_id", userId).eq("source_kind", event.sourceKind).eq("source_id", event.sourceId).maybeSingle();
+  if (tombstoneError) throw tombstoneError;
+  if (sourceTombstone?.ignore_future_imports) throw new Error("This source was deleted or ignored and cannot recreate the calendar event.");
   console.info(JSON.stringify({ service: "calendar-event-service", stage: "normalized", sourceKind: event.sourceKind, sourceId: event.sourceId, title: event.title, date: event.date, start: event.startLabel, end: event.endLabel, recurrence: event.recurrenceRule ?? event.recurrence ?? "none" }));
   const googleShape: CanonicalGoogleEvent = {
     id: `${event.sourceKind}:${event.sourceId}`,
@@ -105,6 +109,7 @@ export async function createCalendarEvent(userId: string, input: CalendarEventIn
     user_id: userId, fingerprint, title: event.title, start_at: event.startAt, end_at: event.endAt,
     all_day: event.allDay, time_zone: event.timeZone, location: event.location ?? null, description: event.notes ?? null,
     status: event.tentative ? "tentative" : "confirmed", recurrence_rule: event.recurrenceRule ?? null,
+    deleted_at: null, deleted_by_user: false, hidden_from_calendar: false, deletion_reason: null,
     last_seen_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   };
   const { data: canonical, error: canonicalError } = await supabase.from("canonical_events").upsert(canonicalRow, { onConflict: "user_id,fingerprint" }).select("id").single();

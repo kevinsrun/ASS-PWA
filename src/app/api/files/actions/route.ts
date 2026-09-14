@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { commitExtractionItem, normalizedExtractionTypes } from "@/lib/fileIntelligence";
 import { ApiAuthError, requireApiUser } from "@/lib/serverAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
-import { createEventDecision, recordClassificationFeedback } from "@/lib/objectCreation";
+import { createEventDecision, markExtractionItemIgnored, recordClassificationFeedback } from "@/lib/objectCreation";
 
 export async function POST(request: NextRequest) {
   let attemptedItemId = "unknown";
@@ -21,8 +21,7 @@ export async function POST(request: NextRequest) {
       await supabase.from("extraction_items").update({ review_status: "approved", updated_at: new Date().toISOString() }).eq("id", body.itemId).eq("user_id", user.id);
       conversionResult = await commitExtractionItem(user.id, body.itemId, { normalizedType: body.normalizedType });
     } else {
-      const { error: rejectError } = await supabase.from("extraction_items").update({ review_status: "rejected", updated_at: new Date().toISOString() }).eq("id", body.itemId).eq("user_id", user.id);
-      if (rejectError) throw rejectError;
+      await markExtractionItemIgnored(user.id, body.itemId);
     }
     await createEventDecision(user.id, { sourceKind: "file", sourceId: body.itemId, decision: body.action, context: { title: item.title, itemType: item.item_type, confidence: item.confidence } });
     await recordClassificationFeedback(user.id, {

@@ -174,12 +174,16 @@ export async function upsertCanonicalEvent(values: {
 
   const { data: existingSource, error: sourceReadError } = await supabase
     .from("calendar_event_sources")
-    .select("canonical_event_id,etag,deleted_at")
+    .select("canonical_event_id,etag,deleted_at,ignore_future_imports")
     .eq("google_account_id", accountId)
     .eq("calendar_id", calendarId)
     .eq("google_event_id", event.id)
     .maybeSingle();
   if (sourceReadError) throw sourceReadError;
+  if (existingSource?.ignore_future_imports) {
+    console.info(JSON.stringify({ service: "calendar-canonical", stage: "suppressed-by-tombstone", accountId, calendarId, googleEventId: event.id }));
+    return { canonicalId: String(existingSource.canonical_event_id), duplicateMerged: false, suppressed: true };
+  }
 
   let canonicalId = existingSource?.canonical_event_id
     ? String(existingSource.canonical_event_id)
@@ -210,6 +214,8 @@ export async function upsertCanonicalEvent(values: {
       .from("canonical_events")
       .select("id,title,description,start_at,end_at,location,organizer_email,attendee_emails,recurring_key")
       .eq("user_id", userId)
+      .is("deleted_at", null)
+      .eq("hidden_from_calendar", false)
       .gte("start_at", lower)
       .lte("start_at", upper)
       .limit(30);
@@ -268,6 +274,7 @@ export async function upsertCanonicalEvent(values: {
     etag: event.etag ?? null,
     payload_hash: payloadHash,
     deleted_at: null,
+    source_deleted: false,
     last_seen_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }, { onConflict: "google_account_id,calendar_id,google_event_id" });
@@ -289,7 +296,7 @@ export async function upsertCanonicalEvent(values: {
   }, { onConflict: "user_id,canonical_event_id" });
   if (planError) throw planError;
 
-  return { canonicalId, duplicateMerged };
+  return { canonicalId, duplicateMerged, suppressed: false };
 }
 
 export async function removeCanonicalSources(values: {

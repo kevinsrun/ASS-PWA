@@ -1,0 +1,14 @@
+[
+  { "id": 1, "name": "delete ASS-only event", "expected": "canonical tombstone, plan removed" },
+  { "id": 2, "name": "delete Google-synced event", "expected": "explicit Google delete or local tombstone" },
+  { "id": 3, "name": "delete syllabus-created event", "expected": "source extraction preserved and ignored" },
+  { "id": 4, "name": "deleted syllabus event does not resurrect", "expected": "source tombstone suppresses import" },
+  { "id": 5, "name": "lecture converts to recurring event", "input": "MWF 10:00-10:50 AM", "expected": "BYDAY=MO,WE,FR" },
+  { "id": 6, "name": "lab converts to recurring event", "input": "Lab: Thursday 2:00-5:00 PM", "expected": "BYDAY=TH" },
+  { "id": 7, "name": "assignment converts to task and deadline", "expected": "todo, deadline, canonical event and source links" },
+  { "id": 8, "name": "conference converts to calendar event", "expected": "dated canonical event" },
+  { "id": 9, "name": "conversion survives page refresh", "expected": "plan reloads from Supabase" },
+  { "id": 10, "name": "conversion survives cron sync", "expected": "canonical source remains active" },
+  { "id": 11, "name": "reconciliation restores missing conversion", "expected": "destination recreated and linked" },
+  { "id": 12, "name": "reconciliation is idempotent", "expected": "existing destination skipped without duplicate" }
+]

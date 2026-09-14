@@ -69,7 +69,7 @@ type AppContextType = {
   reloadCloud: () => Promise<void>;
   addPlan: (plan: Omit<SavedPlan, "id">) => void;
   createPlan: (plan: Omit<SavedPlan, "id">, source?: { kind?: "manual" | "task" | "habit" | "project" | "assistant"; id?: string }) => Promise<{ ok: boolean; error?: string; googleError?: string | null }>;
-  deletePlan: (id: number) => void;
+  deletePlan: (id: number, options?: { deleteFromGoogle?: boolean }) => Promise<{ ok: boolean; error?: string }>;
   setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   addCodingWorkflow: (workflow: Omit<CodingWorkflow, "id" | "createdAt">) => void;
   updateCodingWorkflow: (id: number, updates: Partial<Omit<CodingWorkflow, "id">>) => void;
@@ -333,10 +333,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function syncCalendarChange(
     method: "POST" | "PATCH" | "DELETE",
     plan: SavedPlan,
-    source?: { kind?: "manual" | "task" | "habit" | "project" | "assistant"; id?: string }
+    source?: { kind?: "manual" | "task" | "habit" | "project" | "assistant"; id?: string; deleteFromGoogle?: boolean }
   ) {
     if (!session?.access_token) return { ok: true, localOnly: true };
-    if (method !== "POST" && !profile.gmailConnected) return { ok: true, localOnly: true };
     setCalendarActionError(null);
     try {
       const response = await fetch("/api/calendar/events", {
@@ -353,6 +352,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 googleAccountId: plan.googleAccountId,
                 canonicalEventId: plan.canonicalEventId,
                 localId: plan.id,
+                deleteFromGoogle: Boolean(source?.deleteFromGoogle),
               }
             : { ...plan, sourceKind: source?.kind ?? "manual", sourceId: source?.id ?? String(plan.id), syncToGoogle: profile.gmailConnected }
         ),
@@ -387,12 +387,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void createPlan(plan);
   }
 
-  function deletePlan(id: number) {
+  async function deletePlan(id: number, options?: { deleteFromGoogle?: boolean }) {
     const plan = plans.find((candidate) => candidate.id === id);
-    setPlans((prev) => prev.filter((plan) => plan.id !== id));
-    if (plan?.googleCalendarId && plan.googleEventId) {
-      void syncCalendarChange("DELETE", plan);
-    }
+    if (!plan) return { ok: false, error: "Calendar event was not found." };
+    if (!session?.access_token) { setPlans((prev) => prev.filter((candidate) => candidate.id !== id)); return { ok: true }; }
+    const result = await syncCalendarChange("DELETE", plan, { deleteFromGoogle: options?.deleteFromGoogle });
+    if (result.ok) setPlans((prev) => prev.filter((candidate) => candidate.id !== id));
+    return result;
   }
 
   function addCodingWorkflow(workflow: Omit<CodingWorkflow, "id" | "createdAt">) {
