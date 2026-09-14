@@ -10,7 +10,8 @@
     "ass:overnight": "node scripts/ass-overnight-runner.mjs",
     "verify:syllabus-calendar": "node scripts/verify-syllabus-calendar.mjs",
     "verify:intelligence": "node scripts/verify-intelligence-fixtures.mjs",
-    "verify:calendar-integrity": "node scripts/verify-calendar-integrity-fixtures.mjs"
+    "verify:calendar-integrity": "node scripts/verify-calendar-integrity-fixtures.mjs",
+    "verify:chat-actions": "node scripts/verify-chat-actions.mjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

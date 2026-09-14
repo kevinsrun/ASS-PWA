@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bot, Code2, Mail, Send, X } from "lucide-react";
-import { addMinutesToLabel, formatTimeLabel, getTodayString } from "@/lib/dateTime";
-import { ChatMessage, PlanCategory } from "@/lib/types";
+import { ChatMessage } from "@/lib/types";
+import type { AssistantActionResult } from "@/lib/assistantActionExecutor";
 import { useAppContext } from "@/providers/AppProvider";
+import { useAuth } from "@/providers/AuthProvider";
 
 const starterMessage: ChatMessage = {
   role: "assistant",
@@ -14,62 +15,7 @@ const starterMessage: ChatMessage = {
 };
 
 type ChatTool = "none" | "email" | "code";
-
-function parseDateFromText(text: string) {
-  const today = new Date(`${getTodayString()}T00:00:00`);
-  if (/\btoday\b/i.test(text)) return getTodayString();
-  if (/\btomorrow\b/i.test(text)) {
-    today.setDate(today.getDate() + 1);
-    return today.toISOString().split("T")[0];
-  }
-
-  const iso = text.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
-  if (iso) return iso[1];
-
-  const slash = text.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
-  if (slash) {
-    const year = slash[3]
-      ? Number(slash[3].length === 2 ? `20${slash[3]}` : slash[3])
-      : today.getFullYear();
-    return `${year}-${slash[1].padStart(2, "0")}-${slash[2].padStart(2, "0")}`;
-  }
-
-  return getTodayString();
-}
-
-function parseTimeFromText(text: string) {
-  const time = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
-  if (time) {
-    let hour = Number(time[1]);
-    const minute = time[2] ?? "00";
-    const period = time[3].toLowerCase();
-    if (period === "pm" && hour !== 12) hour += 12;
-    if (period === "am" && hour === 12) hour = 0;
-    return `${String(hour).padStart(2, "0")}:${minute}`;
-  }
-
-  const military = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
-  return military ? `${military[1].padStart(2, "0")}:${military[2]}` : null;
-}
-
-function parseDurationFromText(text: string) {
-  const minutes = text.match(/\bfor\s+(\d{1,3})\s*(?:min|mins|minutes)\b/i);
-  if (minutes) return Number(minutes[1]);
-
-  const hours = text.match(/\bfor\s+(\d(?:\.\d)?)\s*(?:hr|hrs|hour|hours)\b/i);
-  if (hours) return Math.round(Number(hours[1]) * 60);
-
-  return 60;
-}
-
-function inferCategory(text: string): PlanCategory {
-  if (/gym|workout|run|fitness/i.test(text)) return "fitness";
-  if (/class|school|study|exam|homework/i.test(text)) return "school";
-  if (/doctor|health|dentist|therapy/i.test(text)) return "health";
-  if (/bill|bank|money|finance/i.test(text)) return "finance";
-  if (/work|meeting|client|shift|job/i.test(text)) return "work";
-  return "personal";
-}
+type PendingAction = AssistantActionResult & { runId: string };
 
 export default function ChatPage() {
   const {
@@ -80,14 +26,13 @@ export default function ChatPage() {
     chatMessages,
     codingWorkflows,
     profile,
-    addPlan,
-    addTodo,
-    addHabit,
     setChatMessages,
     addCodingWorkflow,
     updateCodingWorkflow,
     deleteCodingWorkflow,
+    reloadCloud,
   } = useAppContext();
+  const { session } = useAuth();
 
   const messages = chatMessages.length ? chatMessages : [starterMessage];
   const [input, setInput] = useState("");
@@ -98,6 +43,10 @@ export default function ChatPage() {
   const [emailInfo, setEmailInfo] = useState("");
   const [emailDraft, setEmailDraft] = useState("");
   const [workflowObjective, setWorkflowObjective] = useState("");
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
+  const [chatError, setChatError] = useState("");
+  const readingRef = useRef<HTMLElement>(null);
+  useEffect(() => { readingRef.current?.scrollTo({ top: readingRef.current.scrollHeight, behavior: "smooth" }); }, [messages.length, loading, pendingActions.length]);
 
   async function sendMessage() {
     const text = input.trim();
@@ -114,98 +63,11 @@ export default function ChatPage() {
     setInput("");
     setLoading(true);
 
-    const todoIntent =
-      /\b(add|create|make)\b/i.test(text) &&
-      /\b(todo|to-do|task)\b/i.test(text);
-    const habitIntent =
-      /\b(add|create|start|track)\b/i.test(text) &&
-      /\b(habit|daily|routine)\b/i.test(text);
-    const calendarIntent =
-      /\b(add|schedule|put|create)\b/i.test(text) &&
-      /\b(calendar|event|meeting|class|gym|appointment|plan|schedule)\b/i.test(text);
-    const eventTime = parseTimeFromText(text);
-
-    if (calendarIntent && eventTime) {
-      const date = parseDateFromText(text);
-      const duration = parseDurationFromText(text);
-      const cleanedTitle =
-        text
-          .replace(/\b(add|schedule|put|create)\b/gi, "")
-          .replace(/\b(to|on|my|the)?\s*calendar\b/gi, "")
-          .replace(/\btoday\b|\btomorrow\b/gi, "")
-          .replace(/\b(20\d{2}-\d{2}-\d{2})\b/g, "")
-          .replace(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g, "")
-          .replace(/\b\d{1,2}(?::\d{2})?\s*(am|pm)\b/gi, "")
-          .replace(/\bfor\s+\d{1,3}\s*(min|mins|minutes)\b/gi, "")
-          .replace(/\bfor\s+\d(?:\.\d)?\s*(hr|hrs|hour|hours)\b/gi, "")
-          .trim() || "Calendar event";
-
-      addPlan({
-        title: cleanedTitle,
-        date,
-        startLabel: formatTimeLabel(eventTime),
-        endLabel: addMinutesToLabel(eventTime, duration),
-        recurrence: "none",
-        category: inferCategory(text),
-        priority: "medium",
-        notes: `Added from AI chat: ${text}`,
-      });
-
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: `Added "${cleanedTitle}" to your calendar on ${date} at ${formatTimeLabel(eventTime)}.`,
-          createdAt: new Date().toISOString(),
-        },
-      ]);
-    } else if (todoIntent) {
-      const title =
-        text
-          .replace(/\b(add|create|make)\b/gi, "")
-          .replace(/\b(todo|to-do|task)\b/gi, "")
-          .replace(/\bto my\b|\bmy\b/gi, "")
-          .trim() || "New task";
-
-      addTodo(title, /urgent|important|high/i.test(text) ? "high" : "medium", 60, null);
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: `Added "${title}" to your to-dos.`,
-          createdAt: new Date().toISOString(),
-        },
-      ]);
-    } else if (habitIntent) {
-      const title =
-        text
-          .replace(/\b(add|create|start|track)\b/gi, "")
-          .replace(/\b(habit|daily|routine)\b/gi, "")
-          .replace(/\bto my\b|\bmy\b/gi, "")
-          .trim() || "New habit";
-
-      addHabit(title, {
-        frequency: /weekday/i.test(text)
-          ? "weekdays"
-          : /weekend/i.test(text)
-          ? "weekends"
-          : "daily",
-        category: inferCategory(text),
-      });
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: `Added "${title}" to your habits.`,
-          createdAt: new Date().toISOString(),
-        },
-      ]);
-    }
-
     try {
+      if (!session?.access_token) throw new Error("Sign in so ASS can safely execute actions.");
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
           message: text,
           messages: nextMessages.slice(-20),
@@ -215,10 +77,16 @@ export default function ChatPage() {
           journals,
           codingWorkflows,
           profile,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json() as { reply?: string; error?: string; runId?: string; actionResults?: AssistantActionResult[] };
+      if (!response.ok) throw new Error(data.error ?? data.reply ?? "ASS could not complete the request.");
+      const awaiting = (data.actionResults ?? []).filter((result) => result.status === "requires_confirmation");
+      if (data.runId) setPendingActions(awaiting.map((result) => ({ ...result, runId: data.runId! })));
+      await reloadCloud();
+      setChatError("");
       setChatMessages((prev) =>
         [
           ...prev,
@@ -231,17 +99,34 @@ export default function ChatPage() {
       );
     } catch (error) {
       console.error(error);
+      const message = error instanceof Error ? error.message : "Something went wrong while contacting the AI.";
+      setChatError(message);
       setChatMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: "Something went wrong while contacting the AI.",
+          content: message,
           createdAt: new Date().toISOString(),
         },
       ]);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function decideAction(item: PendingAction, confirm: boolean) {
+    if (!confirm) { setPendingActions((current) => current.filter((candidate) => candidate !== item)); return; }
+    if (!session?.access_token) return;
+    setLoading(true);
+    try {
+      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ runId: item.runId, confirmedActions: [item.suggestedAction ?? item.action], timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
+      const data = await response.json() as { reply?: string; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "The action could not be completed.");
+      setChatMessages((current) => [...current, { role: "assistant", content: data.reply ?? "Action completed.", createdAt: new Date().toISOString() }]);
+      setPendingActions((current) => current.filter((candidate) => candidate !== item));
+      await reloadCloud();
+    } catch (error) { setChatError(error instanceof Error ? error.message : "The action could not be completed."); }
+    finally { setLoading(false); }
   }
 
   function writeEmail() {
@@ -408,7 +293,7 @@ Do not use leaked proprietary files or unauthorized code.`;
           </section>
         )}
 
-        <section className="chat-reading mt-5 flex-1 space-y-5 overflow-y-auto p-4">
+        <section ref={readingRef} className="chat-reading mt-5 flex-1 space-y-5 overflow-y-auto p-4" aria-live="polite">
           {messages.map((message, index) => (
             <div
               key={`${message.createdAt ?? "message"}-${index}`}
@@ -423,26 +308,35 @@ Do not use leaked proprietary files or unauthorized code.`;
             </div>
           ))}
           {loading && (
-            <div className="mr-auto rounded-2xl bg-gray-100 px-4 py-3 text-gray-500">
-              Thinking...
+            <div className="chat-thinking mr-auto rounded-2xl px-4 py-3" role="status">
+              Thinking…
             </div>
           )}
+          {pendingActions.map((item) => {
+            const action = item.suggestedAction ?? item.action;
+            return <article className="chat-action-card" key={`${item.runId}-${item.type}-${action.sourceId}`}><small>ASS ACTION</small><strong>{action.title ?? item.type.replaceAll("_", " ")}</strong>{action.start && action.end ? <p>{new Date(action.start).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}–{new Date(action.end).toLocaleTimeString([], { timeStyle: "short" })}</p> : null}{item.conflicts?.length ? <p className="chat-action-warning">Conflicts with {item.conflicts.join(", ")}</p> : null}<div><button type="button" disabled={loading} onClick={() => void decideAction(item, true)}>Confirm</button><button type="button" disabled={loading} onClick={() => void decideAction(item, false)}>Cancel</button></div></article>;
+          })}
         </section>
 
-        <div className="chat-composer mt-4 flex gap-2 rounded-3xl p-2">
-          <input
+        {chatError ? <p className="chat-error" role="alert">{chatError}</p> : null}
+        <div className={`chat-composer mt-4 flex gap-2 rounded-3xl p-2 ${chatError ? "chat-composer--error" : ""}`}>
+          <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") sendMessage();
+              if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); }
             }}
             placeholder="Message ASS..."
-            className="min-h-12 min-w-0 flex-1 rounded-2xl border border-emerald-100 bg-white px-4 outline-none focus:border-emerald-400"
+            disabled={loading}
+            rows={1}
+            aria-label="Message ASS"
+            className="chat-input min-h-12 min-w-0 flex-1 resize-none rounded-2xl px-4 py-3"
           />
           <button
-            onClick={sendMessage}
-            disabled={loading}
-            className="inline-flex min-h-12 items-center gap-2 rounded-2xl bg-emerald-600 px-4 text-white disabled:opacity-50"
+            onClick={() => void sendMessage()}
+            disabled={loading || !input.trim()}
+            aria-label={loading ? "ASS is responding" : "Send message"}
+            className="chat-send inline-flex min-h-12 items-center gap-2 rounded-2xl px-4"
           >
             <Send size={16} />
             Send
