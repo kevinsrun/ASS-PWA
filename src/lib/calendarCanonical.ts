@@ -174,7 +174,7 @@ export async function upsertCanonicalEvent(values: {
 
   const { data: existingSource, error: sourceReadError } = await supabase
     .from("calendar_event_sources")
-    .select("canonical_event_id")
+    .select("canonical_event_id,etag,deleted_at")
     .eq("google_account_id", accountId)
     .eq("calendar_id", calendarId)
     .eq("google_event_id", event.id)
@@ -185,6 +185,9 @@ export async function upsertCanonicalEvent(values: {
     ? String(existingSource.canonical_event_id)
     : null;
   let duplicateMerged = false;
+  if (canonicalId && existingSource?.etag && event.etag && String(existingSource.etag) === String(event.etag) && !existingSource.deleted_at) {
+    return { canonicalId, duplicateMerged: false };
+  }
   if (!canonicalId) {
     const { data: sameGoogleEvent, error: sameEventError } = await supabase
       .from("calendar_event_sources")

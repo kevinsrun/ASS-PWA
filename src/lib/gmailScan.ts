@@ -1,18 +1,24 @@
-import { createHash, randomUUID } from "crypto";
-import { createCalendarEvent } from "@/lib/calendarEventService";
+import { randomUUID } from "crypto";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
 import { addMinutesToLabel, formatTimeLabel } from "@/lib/dateTime";
 import { getGoogleAccessToken, listGoogleAccounts } from "@/lib/googleAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
+import { createAssistantAction, createCanonicalEvent, createDeadline, createEmailDraft, createEventDecision, createTask } from "@/lib/objectCreation";
 import type { EmailIntelligenceItem, PlanCategory } from "@/lib/types";
 
 type GmailMessageList = { messages?: Array<{ id: string; threadId?: string }> };
 type GmailMessage = {
   id: string;
   threadId?: string;
+  historyId?: string;
   snippet?: string;
   internalDate?: string;
   payload?: { headers?: Array<{ name: string; value: string }> };
+};
+type GmailHistoryResponse = {
+  history?: Array<{ messagesAdded?: Array<{ message?: { id?: string } }> }>;
+  nextPageToken?: string;
+  historyId?: string;
 };
 type Classification = {
   id: string;
@@ -113,6 +119,40 @@ async function fetchMessages(ids: string[], accessToken: string) {
   return messages;
 }
 
+async function incrementalMessageIds(accessToken: string, historyId?: string | null) {
+  const profile = await gmailFetch<{ historyId?: string }>("https://gmail.googleapis.com/gmail/v1/users/me/profile", accessToken);
+  const newestHistoryId = profile.historyId ?? historyId ?? null;
+  if (!historyId) {
+    const list = await gmailFetch<GmailMessageList>(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50&q=${encodeURIComponent("newer_than:7d")}`,
+      accessToken
+    );
+    return { ids: (list.messages ?? []).map((message) => message.id), newestHistoryId, fallback: true };
+  }
+  const ids = new Set<string>();
+  let pageToken: string | undefined;
+  try {
+    do {
+      const params = new URLSearchParams({ startHistoryId: historyId, historyTypes: "messageAdded", maxResults: "500" });
+      if (pageToken) params.set("pageToken", pageToken);
+      const page = await gmailFetch<GmailHistoryResponse>(`https://gmail.googleapis.com/gmail/v1/users/me/history?${params}`, accessToken);
+      for (const entry of page.history ?? []) for (const added of entry.messagesAdded ?? []) {
+        if (added.message?.id) ids.add(added.message.id);
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return { ids: [...ids], newestHistoryId, fallback: false };
+  } catch (error) {
+    if (!String(error).includes("HTTP 404")) throw error;
+    console.warn(JSON.stringify({ service: "gmail-intelligence", stage: "history-token-expired", historyId }));
+    const list = await gmailFetch<GmailMessageList>(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50&q=${encodeURIComponent("newer_than:7d")}`,
+      accessToken
+    );
+    return { ids: (list.messages ?? []).map((message) => message.id), newestHistoryId, fallback: true };
+  }
+}
+
 async function classify(messages: GmailMessage[], context: string) {
   if (messages.length === 0) return [];
   const input = messages.map((message) => ({
@@ -167,10 +207,6 @@ function minutes(value: string) {
   return hour * 60 + minute;
 }
 
-function stableEmailId(accountId: string, messageId: string, kind: string) {
-  return 6_000_000_000 + createHash("sha256").update(`${accountId}:${messageId}:${kind}`).digest().readUInt32BE(0);
-}
-
 function conflictAnalysis(
   item: Classification,
   plans: Array<{ title: string; date: string; start_label: string; end_label: string; priority: string }>
@@ -217,19 +253,21 @@ async function contextForUser(userId: string) {
   const today = new Date();
   const through = new Date(today);
   through.setDate(through.getDate() + 90);
-  const [plans, todos, habits, courses, styles, sourceContext] = await Promise.all([
+  const [plans, todos, habits, courses, styles, sourceContext, feedback, rules] = await Promise.all([
     supabase.from("plans").select("title,date,start_label,end_label,priority").eq("user_id", userId).gte("date", today.toISOString().slice(0, 10)).lte("date", through.toISOString().slice(0, 10)).order("date").limit(250),
     supabase.from("todos").select("title,priority,due_date").eq("user_id", userId).eq("done", false).limit(40),
     supabase.from("habits").select("name,frequency,time_preference").eq("user_id", userId).limit(30),
     supabase.from("academic_courses").select("name,course_code,status").eq("user_id", userId).limit(30),
     supabase.from("writing_style_profiles").select("context_type,traits,sample_count").eq("user_id", userId),
     supabase.from("file_extractions").select("classification,summary,structured_data,created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(20),
+    supabase.from("classification_feedback").select("source_type,original_text,ai_predicted_label,user_corrected_label,user_action").eq("user_id", userId).order("created_at", { ascending: false }).limit(20),
+    supabase.from("classification_rules").select("rule_text,confidence,evidence_count").eq("user_id", userId).eq("active", true).order("confidence", { ascending: false }).limit(20),
   ]);
-  const error = [plans, todos, habits, courses, styles, sourceContext].find((result) => result.error)?.error;
+  const error = [plans, todos, habits, courses, styles, sourceContext, feedback, rules].find((result) => result.error)?.error;
   if (error) throw error;
   return {
     plans: (plans.data ?? []) as Array<{ title: string; date: string; start_label: string; end_label: string; priority: string }>,
-    prompt: JSON.stringify({ calendar: plans.data ?? [], tasks: todos.data ?? [], habits: habits.data ?? [], classes: courses.data ?? [], writingStyles: styles.data ?? [], selectedDocumentContext: sourceContext.data ?? [] }),
+    prompt: JSON.stringify({ calendar: plans.data ?? [], tasks: todos.data ?? [], habits: habits.data ?? [], classes: courses.data ?? [], writingStyles: styles.data ?? [], selectedDocumentContext: sourceContext.data ?? [], recentCorrections: feedback.data ?? [], personalizedRules: rules.data ?? [] }),
   };
 }
 
@@ -243,23 +281,24 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
   const context = await contextForUser(userId);
   const all: EmailIntelligenceItem[] = [];
   const failures: string[] = [];
+  let emailsScanned = 0;
+  let actionItemsCreated = 0;
+  let draftsCreated = 0;
+  let calendarEventsCreated = 0;
 
   for (const account of accounts) {
     const accountId = String(account.id);
     try {
       await supabase.from("google_tokens").update({ email_sync_status: "syncing", email_sync_error: null }).eq("id", accountId).eq("user_id", userId);
       const accessToken = await getGoogleAccessToken(userId, accountId);
-      const list = await gmailFetch<GmailMessageList>(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=25&q=${encodeURIComponent("newer_than:7d")}`,
-        accessToken
-      );
-      const ids = (list.messages ?? []).map((message) => message.id);
+      const incremental = await incrementalMessageIds(accessToken, account.gmail_history_id ? String(account.gmail_history_id) : null);
+      const ids = incremental.ids;
       const { data: existing } = ids.length
         ? await supabase.from("email_suggestions").select("external_id").eq("user_id", userId).eq("google_account_id", accountId).in("external_id", ids)
         : { data: [] };
       const seen = new Set((existing ?? []).map((row) => String(row.external_id)));
-      const pending = (list.messages ?? []).filter((message) => !seen.has(message.id));
-      const messages = await fetchMessages(pending.map((message) => message.id), accessToken);
+      const messages = await fetchMessages(ids.filter((id) => !seen.has(id)), accessToken);
+      emailsScanned += messages.length;
       const classifications = await classify(messages, context.prompt);
       const byId = new Map(classifications.map((item) => [item.id, item]));
       const processedAt = new Date().toISOString();
@@ -283,15 +322,45 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
         };
       });
       if (rows.length > 0) {
+        const { data: storedMessages, error: messageError } = await supabase.from("email_messages").upsert(messages.map((message) => ({
+          user_id: userId,
+          google_account_id: accountId,
+          google_message_id: message.id,
+          thread_id: message.threadId ?? null,
+          history_id: message.historyId ?? null,
+          sender: header(message, "From"),
+          subject: header(message, "Subject"),
+          snippet: message.snippet ?? "",
+          received_at: message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null,
+          raw_headers: Object.fromEntries((message.payload?.headers ?? []).map((item) => [item.name, item.value])),
+          updated_at: processedAt,
+        })), { onConflict: "user_id,google_account_id,google_message_id" }).select("id,google_message_id");
+        if (messageError) throw messageError;
         const { data: savedSuggestions, error } = await supabase.from("email_suggestions").upsert(rows, { onConflict: "user_id,google_account_id,external_id" }).select("id,external_id,intelligence_type,action_required,response_needed,suggested_reply,confidence,conflict_details,recommendations,status,title,sender,thread_id,message_id");
         if (error) throw error;
-        const draftRows = (savedSuggestions ?? []).filter((row) => row.response_needed && Number(row.confidence) >= 0.82 && String(row.suggested_reply ?? "").trim()).map((row) => ({
-          user_id: userId, google_account_id: accountId, email_suggestion_id: row.id, thread_id: row.thread_id, in_reply_to_message_id: row.message_id,
-          recipient: String(row.sender ?? "").match(/<([^>]+)>/)?.[1] ?? String(row.sender ?? "").match(/[\w.+-]+@[\w.-]+/)?.[0] ?? null,
-          subject: String(row.title ?? "Reply").match(/^re:/i) ? String(row.title) : `Re: ${String(row.title ?? "Reply")}`,
-          body: String(row.suggested_reply), context_snapshot: { generatedFrom: "gmail_scan", styleProfilesIncluded: true }, status: "ready", updated_at: processedAt,
-        }));
-        if (draftRows.length) { const { error: draftError } = await supabase.from("email_drafts").upsert(draftRows, { onConflict: "email_suggestion_id" }); if (draftError) throw draftError; }
+        const suggestionByExternalId = new Map((savedSuggestions ?? []).map((row) => [String(row.external_id), row]));
+        const messageIdByExternalId = new Map((storedMessages ?? []).map((row) => [String(row.google_message_id), String(row.id)]));
+        const extractionRows = rows.flatMap((row) => {
+          const emailMessageId = messageIdByExternalId.get(row.external_id);
+          if (!emailMessageId) return [];
+          return [{ user_id: userId, email_message_id: emailMessageId, predicted_label: row.intelligence_type, confidence: row.confidence, structured_data: { date: row.date, time: row.time, duration: row.duration, category: row.category, actionRequired: row.action_required, responseNeeded: row.response_needed }, status: row.intelligence_type === "no_action" ? "ignored" : "classified", updated_at: processedAt }];
+        });
+        if (extractionRows.length) {
+          const { error: extractionError } = await supabase.from("email_extractions").upsert(extractionRows, { onConflict: "email_message_id" });
+          if (extractionError) throw extractionError;
+        }
+        for (const row of savedSuggestions ?? []) {
+          if (row.response_needed && Number(row.confidence) >= 0.82 && String(row.suggested_reply ?? "").trim()) {
+            const draft = await createEmailDraft(userId, {
+              googleAccountId: accountId, emailSuggestionId: Number(row.id), threadId: row.thread_id,
+              inReplyToMessageId: row.message_id,
+              recipient: String(row.sender ?? "").match(/<([^>]+)>/)?.[1] ?? String(row.sender ?? "").match(/[\w.+-]+@[\w.-]+/)?.[0] ?? null,
+              subject: String(row.title ?? "Reply").match(/^re:/i) ? String(row.title) : `Re: ${String(row.title ?? "Reply")}`,
+              body: String(row.suggested_reply), context: { generatedFrom: "gmail_scan", styleProfilesIncluded: true },
+            });
+            if (draft.created) draftsCreated += 1;
+          }
+        }
         const emailActions = (savedSuggestions ?? []).filter((row) => row.intelligence_type !== "no_action").map((row) => ({
           user_id: userId,
           email_suggestion_id: row.id,
@@ -309,52 +378,35 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
         }
         const actionable = rows.filter((row) => row.action_required && row.confidence >= 0.82 && row.intelligence_type !== "no_action");
         const taskTypes = new Set(["task", "deadline", "reminder", "financial_aid", "invoice", "scholarship", "research", "project_update"]);
-        const taskRows = actionable.filter((row) => taskTypes.has(row.intelligence_type)).map((row) => ({
-          user_id: userId,
-          local_id: stableEmailId(accountId, row.external_id, "task"),
-          title: row.title,
-          done: false,
-          priority: row.importance === "urgent" || row.importance === "high" ? "high" : "medium",
-          duration: row.duration,
-          due_date: row.date,
-          tags: [row.intelligence_type, "email", String(account.connected_email ?? "google")],
-          recurrence: "none",
-          subtasks: [],
-          updated_at: processedAt,
-        }));
-        if (taskRows.length) {
-          const { error } = await supabase.from("todos").upsert(taskRows, { onConflict: "user_id,local_id" });
-          if (error) throw error;
-        }
-        const deadlineEvents = actionable.filter((row) => row.date && ["deadline", "financial_aid", "invoice"].includes(row.intelligence_type));
-        for (const row of deadlineEvents) {
-          await createCalendarEvent(userId, {
-            title: row.title, date: String(row.date), startLabel: row.time ? formatTimeLabel(row.time) : "12:00 AM",
-            endLabel: row.time ? addMinutesToLabel(row.time, Math.max(15, row.duration)) : "11:59 PM", allDay: !row.time,
-            recurrence: "none", category: row.category, priority: row.importance === "urgent" || row.importance === "high" ? "high" : "medium",
-            notes: row.summary, sourceKind: "gmail", sourceId: `${accountId}:${row.external_id}:deadline`, syncToGoogle: false, googleAccountId: accountId,
+        for (const row of actionable) {
+          const sourceId = `${accountId}:${row.external_id}`;
+          const priority = row.importance === "urgent" || row.importance === "high" ? "high" as const : "medium" as const;
+          if (row.date && ["deadline", "financial_aid", "invoice", "scholarship"].includes(row.intelligence_type)) {
+            const deadline = await createDeadline(userId, { sourceKind: "gmail", sourceId, title: row.title, dueAt: `${row.date}T${row.time ?? "00:00"}:00`, priority, notes: row.summary, googleAccountId: accountId, syncToGoogle: false });
+            if (!deadline.event.duplicate) calendarEventsCreated += 1;
+          } else if (taskTypes.has(row.intelligence_type)) {
+            await createTask(userId, { sourceKind: "gmail", sourceId, title: row.title, dueDate: row.date, priority, duration: row.duration, tags: [row.intelligence_type, "email", String(account.connected_email ?? "google")] });
+          }
+          const eventLike = ["meeting", "club_event", "interview", "travel"].includes(row.intelligence_type);
+          if (eventLike && row.date && row.time && row.intelligence_type !== "club_event" && row.confidence >= 0.9) {
+            const event = await createCanonicalEvent(userId, { title: row.title, date: row.date, startLabel: formatTimeLabel(row.time), endLabel: addMinutesToLabel(row.time, row.duration), recurrence: "none", category: row.category, priority, notes: row.summary, sourceKind: "gmail", sourceId, syncToGoogle: false, googleAccountId: accountId });
+            if (!event.duplicate) calendarEventsCreated += 1;
+          } else if (eventLike) {
+            const suggestion = suggestionByExternalId.get(row.external_id);
+            await createEventDecision(userId, { sourceKind: "email", sourceId: String(suggestion?.id ?? row.external_id), context: { title: row.title, type: row.intelligence_type, date: row.date, time: row.time, conflicts: row.conflict_details } });
+          }
+          const assistantAction = await createAssistantAction(userId, {
+            sourceKind: "gmail", sourceId, actionType: eventLike ? "event_decision" : "review",
+            title: row.title, summary: row.summary,
+            priority: row.importance === "urgent" ? "urgent" : row.importance === "high" ? "high" : "normal",
+            payload: { emailSuggestionId: suggestionByExternalId.get(row.external_id)?.id ?? null, googleAccountId: accountId, recommendation: row.recommendations[0] ?? null },
           });
-        }
-        const alertRows = actionable.map((row) => ({
-          user_id: userId,
-          dedupe_key: `email:${accountId}:${row.external_id}`,
-          kind: `email_${row.intelligence_type}`,
-          severity: row.importance === "urgent" ? "urgent" : row.importance === "high" ? "high" : "normal",
-          title: row.title,
-          summary: row.summary,
-          recommendation: row.recommendations[0] ?? (row.date ? `Complete by ${row.date}.` : "Review this email and decide the next action."),
-          action_type: taskTypes.has(row.intelligence_type) ? "open_tasks" : "review",
-          action_payload: { emailSuggestionId: row.external_id, googleAccountId: accountId },
-          status: "pending",
-          updated_at: processedAt,
-        }));
-        if (alertRows.length) {
-          const { error } = await supabase.from("assistant_alerts").upsert(alertRows, { onConflict: "user_id,dedupe_key" });
-          if (error) throw error;
+          if (assistantAction.created) actionItemsCreated += 1;
         }
       }
-      await supabase.from("google_tokens").update({ last_email_sync_at: processedAt, email_sync_status: "synced", email_sync_error: null, updated_at: processedAt }).eq("id", accountId).eq("user_id", userId);
-      console.info(JSON.stringify({ service: "gmail-intelligence", runId, account: accountId.slice(0, 8), processed: rows.length }));
+      const { error: stateError } = await supabase.from("google_tokens").update({ gmail_history_id: incremental.newestHistoryId, last_email_sync_at: processedAt, email_sync_status: "synced", email_sync_error: null, updated_at: processedAt }).eq("id", accountId).eq("user_id", userId);
+      if (stateError) throw stateError;
+      console.info(JSON.stringify({ service: "gmail-intelligence", runId, account: accountId.slice(0, 8), processed: rows.length, incremental: !incremental.fallback, historyIdAdvanced: Boolean(incremental.newestHistoryId) }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown Gmail failure";
       failures.push(`${accountId.slice(0, 8)}: ${message}`);
@@ -362,5 +414,5 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
       console.error(JSON.stringify({ service: "gmail-intelligence", runId, account: accountId.slice(0, 8), stage: "failed", message }));
     }
   }
-  return { connected: accounts.length > 0, suggestions: all, accounts: accounts.length, failures };
+  return { connected: accounts.length > 0, suggestions: all, accounts: accounts.length, failures, emailsScanned, actionItemsCreated, draftsCreated, calendarEventsCreated };
 }

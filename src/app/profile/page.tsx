@@ -3,6 +3,7 @@
 import Link from "next/link";
 import {
   BarChart3,
+  Activity,
   CalendarDays,
   ChevronRight,
   Cloud,
@@ -167,6 +168,11 @@ export default function ProfilePage() {
           <Link href="/analytics" className="settings-row settings-row--link">
             <BarChart3 size={20} aria-hidden="true" />
             <div><strong>Analytics</strong><span>Review activity and trends</span></div>
+            <ChevronRight size={17} aria-hidden="true" />
+          </Link>
+          <Link href="/debug/sync" className="settings-row settings-row--link">
+            <Activity size={20} aria-hidden="true" />
+            <div><strong>Sync diagnostics</strong><span>Accounts, recent runs, and failures</span></div>
             <ChevronRight size={17} aria-hidden="true" />
           </Link>
         </div>

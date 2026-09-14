@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "ass:overnight": "node scripts/ass-overnight-runner.mjs",
-    "verify:syllabus-calendar": "node scripts/verify-syllabus-calendar.mjs"
+    "verify:syllabus-calendar": "node scripts/verify-syllabus-calendar.mjs",
+    "verify:intelligence": "node scripts/verify-intelligence-fixtures.mjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

@@ -5,7 +5,11 @@ export type DriveFile = { id: string; name: string; mimeType: string; modifiedTi
 async function driveJson<T>(userId: string, accountId: string, path: string): Promise<T> {
   const token = await getGoogleAccessToken(userId, accountId);
   const response = await fetch(`https://www.googleapis.com/drive/v3/${path}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
-  if (!response.ok) throw new Error(`Google Drive request failed: HTTP ${response.status} ${await response.text().then((value) => value.slice(0, 300))}`);
+  if (!response.ok) {
+    const body = await response.text().then((value) => value.slice(0, 1000));
+    if (response.status === 403 && /insufficient authentication scopes|insufficientPermissions/i.test(body)) throw new Error("Google Drive permission is missing. Reconnect this Google account from Settings to grant Drive read access.");
+    throw new Error(`Google Drive request failed: HTTP ${response.status} ${body.slice(0, 300)}`);
+  }
   return response.json() as Promise<T>;
 }
 

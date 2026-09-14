@@ -6,7 +6,7 @@ export function verifyCronRequest(req: NextRequest) {
   if (!secret) {
     return NextResponse.json(
       { error: "CRON_SECRET is not configured" },
-      { status: 503 }
+      { status: 401 }
     );
   }
 

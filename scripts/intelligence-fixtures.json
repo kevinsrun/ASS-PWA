@@ -1,0 +1,10 @@
+[
+  {"name":"email with deadline","input":{"type":"deadline","actionRequired":true,"confidence":0.96,"date":"2026-09-18"},"expected":["assistant_action","task","deadline","calendar_event"]},
+  {"name":"email with optional event","input":{"type":"club_event","actionRequired":true,"confidence":0.91,"date":"2026-09-18","time":"18:00"},"expected":["assistant_action","event_decision"]},
+  {"name":"email requiring response","input":{"type":"project_update","actionRequired":true,"confidence":0.93,"responseNeeded":true,"suggestedReply":"Thanks — I confirm."},"expected":["assistant_action","email_draft","task"]},
+  {"name":"syllabus lecture/lab time","input":{"type":"meeting","actionRequired":true,"confidence":0.97,"date":"2026-09-15","time":"10:00"},"expected":["assistant_action","calendar_event"]},
+  {"name":"syllabus assignment deadline","input":{"type":"deadline","actionRequired":true,"confidence":0.94,"date":"2026-09-24"},"expected":["assistant_action","task","deadline","calendar_event"]},
+  {"name":"conference schedule","input":{"type":"travel","actionRequired":true,"confidence":0.95,"date":"2026-10-01","time":"09:00"},"expected":["assistant_action","calendar_event"]},
+  {"name":"informational email","input":{"type":"no_action","actionRequired":false,"confidence":0.99},"expected":["ignore"]},
+  {"name":"duplicate calendar event across two calendars","kind":"calendar_duplicate","left":{"title":"Biological Physics Lecture","start":"2026-09-15T14:00:00Z","end":"2026-09-15T14:50:00Z","location":"Barus 168"},"right":{"title":"Biological Physics: Lecture","start":"2026-09-15T14:00:00Z","end":"2026-09-15T14:50:00Z","location":"barus 168"}}
+]

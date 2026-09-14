@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { addMinutesToLabel, formatTimeLabel } from "@/lib/dateTime";
-import { createCalendarEvent } from "@/lib/calendarEventService";
+import { createCanonicalEvent, createEventDecision, createTask, recordClassificationFeedback } from "@/lib/objectCreation";
 import { ApiAuthError, requireApiUser } from "@/lib/serverAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import type { EmailIntelligenceItem, PlanCategory } from "@/lib/types";
 import { weatherDecisionContext } from "@/lib/weatherContext";
+import { ingestDriveFile } from "@/lib/driveIngestion";
 
 function failure(error: unknown) {
   const status = error instanceof ApiAuthError ? error.status : 500;
@@ -110,6 +111,16 @@ export async function POST(request: NextRequest) {
     }
     if (body.id.startsWith("action:")) {
       if (!["accept", "dismiss", "ignore"].includes(body.action)) throw new ApiAuthError("That action is not available for this item.", 400);
+      const actionId = body.id.slice(7);
+      const { data: queued, error: queuedError } = await supabase.from("assistant_action_items").select("action_type,payload").eq("id", actionId).eq("user_id", user.id).single();
+      if (queuedError || !queued) throw new ApiAuthError("Assistant action not found.", 404);
+      if (body.action === "accept" && queued.action_type === "import_file") {
+        const payload = queued.payload as { googleAccountId?: string; driveFileId?: string };
+        if (!payload.googleAccountId || !payload.driveFileId) throw new ApiAuthError("This Drive action is missing its source file.", 400);
+        await ingestDriveFile(user.id, payload.googleAccountId, payload.driveFileId, true);
+      } else if (body.action === "accept" && ["review_extraction", "event_decision"].includes(String(queued.action_type))) {
+        throw new ApiAuthError("Review this item in Inbox before completing it.", 409);
+      }
       const { error: queueError } = await supabase.from("assistant_action_items").update({ status: body.action === "accept" ? "completed" : "dismissed", updated_at: new Date().toISOString() }).eq("id", body.id.slice(7)).eq("user_id", user.id);
       if (queueError) throw queueError;
       return NextResponse.json({ ok: true });
@@ -125,7 +136,7 @@ export async function POST(request: NextRequest) {
     const addEvent = body.action === "accept" || body.action === "going" || body.action === "add_to_calendar";
     if (addEvent) {
       if (eventLike && item.date && item.time) {
-        await createCalendarEvent(user.id, {
+        await createCanonicalEvent(user.id, {
           title: String(item.title),
           date: String(item.date),
           startLabel: formatTimeLabel(String(item.time)),
@@ -138,24 +149,12 @@ export async function POST(request: NextRequest) {
           googleAccountId: item.google_account_id ? String(item.google_account_id) : undefined,
         });
       } else {
-        const { error: todoError } = await supabase.from("todos").insert({
-          user_id: user.id,
-          local_id: Date.now(),
-          title: String(item.title),
-          done: false,
-          priority: item.importance === "urgent" || item.importance === "high" ? "high" : "medium",
-          duration: Number(item.duration ?? 60),
-          due_date: item.date ?? null,
-          tags: [String(item.intelligence_type), "email"],
-          recurrence: "none",
-          subtasks: [],
-        });
-        if (todoError) throw todoError;
+        await createTask(user.id, { sourceKind: "gmail", sourceId: String(item.id), title: String(item.title), priority: item.importance === "urgent" || item.importance === "high" ? "high" : "medium", duration: Number(item.duration ?? 60), dueDate: item.date ?? null, tags: [String(item.intelligence_type), "email"] });
       }
     }
     if (body.action === "maybe") {
       if (!eventLike || !item.date || !item.time) throw new ApiAuthError("A dated event is required for Maybe.", 400);
-      await createCalendarEvent(user.id, {
+      await createCanonicalEvent(user.id, {
         title: String(item.title), date: String(item.date), startLabel: formatTimeLabel(String(item.time)),
         endLabel: addMinutesToLabel(String(item.time), Number(item.duration ?? 60)), recurrence: "none",
         category: (item.category ?? "other") as PlanCategory, priority: "low", notes: String(item.summary ?? item.source ?? ""),
@@ -165,12 +164,7 @@ export async function POST(request: NextRequest) {
     }
     const decision = body.action === "accept" ? (eventLike ? "add_to_calendar" : null) : body.action === "dismiss" ? "ignore" : body.action;
     if (decision) {
-      const { error: decisionError } = await supabase.from("event_decisions").upsert({
-        user_id: user.id, source_kind: "email", source_id: String(item.id), decision,
-        tentative: body.action === "maybe", context: { title: item.title, type: item.intelligence_type, conflicts: item.conflict_details ?? [] },
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "user_id,source_kind,source_id" });
-      if (decisionError) throw decisionError;
+      await createEventDecision(user.id, { sourceKind: "email", sourceId: String(item.id), decision: decision as "going" | "maybe" | "not_going" | "add_to_calendar" | "ignore", tentative: body.action === "maybe", context: { title: item.title, type: item.intelligence_type, conflicts: item.conflict_details ?? [] } });
     }
     const actionStatus = body.action === "going" ? "going" : body.action === "maybe" ? "maybe" : body.action === "not_going" ? "not_going" : addEvent ? "added" : "ignored";
     const { error: actionItemError } = await supabase.from("email_action_items").update({ status: actionStatus, updated_at: new Date().toISOString() }).eq("email_suggestion_id", item.id).eq("user_id", user.id);
@@ -181,6 +175,7 @@ export async function POST(request: NextRequest) {
       .eq("id", body.id)
       .eq("user_id", user.id);
     if (updateError) throw updateError;
+    await recordClassificationFeedback(user.id, { sourceType: "email", sourceId: String(item.id), originalText: `${String(item.title)}\n${String(item.source ?? item.summary ?? "")}`, predictedLabel: String(item.intelligence_type), confidence: Number(item.confidence ?? 0), correctedLabel: addEvent ? (eventLike ? "calendar_event" : "task") : body.action === "maybe" ? "maybe" : body.action === "going" ? "going" : body.action === "not_going" ? "not_going" : "ignore", userAction: body.action, context: { sender: item.sender, conflicts: item.conflict_details ?? [] } });
     return NextResponse.json({ ok: true });
   } catch (error) {
     return failure(error);

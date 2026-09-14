@@ -27,6 +27,7 @@ export type GoogleAccountRecord = GoogleToken & {
   accountColor: string | null;
   lastSuccessfulSyncAt: string | null;
   lastEmailSyncAt: string | null;
+  gmailHistoryId: string | null;
   calendarTimeZone: string;
 };
 
@@ -283,7 +284,7 @@ export async function listGoogleAccounts(userId: string) {
   if (!supabase) throw new Error("A Supabase server key is not configured");
   const { data, error } = await supabase
     .from("google_tokens")
-    .select("id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,scope,last_sync_status,last_sync_error,last_successful_sync_at,last_email_sync_at,calendar_time_zone")
+    .select("id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,scope,last_sync_status,last_sync_error,last_successful_sync_at,last_email_sync_at,gmail_history_id,calendar_time_zone")
     .eq("user_id", userId)
     .order("updated_at", { ascending: false });
   if (error) throw new Error(`Unable to list Google accounts: ${error.message}`);
@@ -295,7 +296,7 @@ export async function readStoredGoogleToken(userId: string, accountId?: string) 
   if (!supabase) throw new Error("A Supabase server key is not configured");
   let query = supabase
     .from("google_tokens")
-    .select("id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,access_token,refresh_token,scope,token_type,expires_at,last_successful_sync_at,last_email_sync_at,calendar_time_zone")
+    .select("id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,access_token,refresh_token,scope,token_type,expires_at,last_successful_sync_at,last_email_sync_at,gmail_history_id,calendar_time_zone")
     .eq("user_id", userId);
   query = accountId ? query.eq("id", accountId) : query.order("updated_at", { ascending: false }).limit(1);
   const { data, error } = await query.maybeSingle();
@@ -318,6 +319,7 @@ export async function readStoredGoogleToken(userId: string, accountId?: string) 
     expires_at: data.expires_at ? Number(data.expires_at) : undefined,
     lastSuccessfulSyncAt: data.last_successful_sync_at ? String(data.last_successful_sync_at) : null,
     lastEmailSyncAt: data.last_email_sync_at ? String(data.last_email_sync_at) : null,
+    gmailHistoryId: data.gmail_history_id ? String(data.gmail_history_id) : null,
     calendarTimeZone: data.calendar_time_zone ? String(data.calendar_time_zone) : "UTC",
   } satisfies GoogleAccountRecord;
 }

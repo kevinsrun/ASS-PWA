@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { commitExtractionItem, normalizedExtractionTypes } from "@/lib/fileIntelligence";
 import { ApiAuthError, requireApiUser } from "@/lib/serverAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
+import { createEventDecision, recordClassificationFeedback } from "@/lib/objectCreation";
 
 export async function POST(request: NextRequest) {
   let attemptedItemId = "unknown";
@@ -23,10 +24,13 @@ export async function POST(request: NextRequest) {
       const { error: rejectError } = await supabase.from("extraction_items").update({ review_status: "rejected", updated_at: new Date().toISOString() }).eq("id", body.itemId).eq("user_id", user.id);
       if (rejectError) throw rejectError;
     }
-    await supabase.from("event_decisions").upsert({
-      user_id: user.id, source_kind: "file", source_id: body.itemId, decision: body.action,
-      context: { title: item.title, itemType: item.item_type, confidence: item.confidence }, updated_at: new Date().toISOString(),
-    }, { onConflict: "user_id,source_kind,source_id" });
+    await createEventDecision(user.id, { sourceKind: "file", sourceId: body.itemId, decision: body.action, context: { title: item.title, itemType: item.item_type, confidence: item.confidence } });
+    await recordClassificationFeedback(user.id, {
+      sourceType: "file", sourceId: body.itemId, originalText: String(item.title),
+      predictedLabel: String(item.item_type), confidence: Number(item.confidence),
+      correctedLabel: body.normalizedType ?? null, userAction: body.action,
+      context: { importedFileId: item.imported_file_id, importedSourceId: item.imported_source_id },
+    });
     if (item.imported_file_id) {
       const { count } = await supabase.from("extraction_items").select("id", { count: "exact", head: true }).eq("imported_file_id", item.imported_file_id).eq("review_status", "pending");
       if (!count) await supabase.from("imported_files").update({ status: "extracted", processing_error: null, updated_at: new Date().toISOString() }).eq("id", item.imported_file_id).eq("user_id", user.id);

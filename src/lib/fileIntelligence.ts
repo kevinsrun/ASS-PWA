@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { createCalendarEvent } from "@/lib/calendarEventService";
+import { createCanonicalEvent, createDeadline, createTask } from "@/lib/objectCreation";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
 import { extractOfficeText } from "@/lib/officeText";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
@@ -87,16 +87,19 @@ export async function commitExtractionItem(userId: string, itemId: string, overr
     ? String(override?.normalizedType)
     : String(item.normalized_type ?? defaultNormalizedType(String(item.item_type), item.due_at ? String(item.due_at) : null));
   console.info(JSON.stringify({ service: "file-conversion", stage: "selected", itemId, extractedType: item.item_type, normalizedType, dueAt: item.due_at ?? null }));
+  if (["calendar_event", "deadline", "study_block"].includes(normalizedType) && !item.due_at) {
+    throw new Error(`A date/time is required before this ${normalizedType.replaceAll("_", " ")} can be registered.`);
+  }
   const linkedTypes: string[] = [];
   const linkedIds: string[] = [];
-  const createsTask = ["task", "project", "deadline", "study_block"].includes(normalizedType);
+  let taskLocalId: number | null = null;
+  const createsTask = ["task", "project"].includes(normalizedType);
   if (createsTask) {
-    const localId = stableLocalId(itemId, "task");
-    const { error: todoError } = await supabase.from("todos").upsert({ user_id: userId, local_id: localId, title: item.title, done: false, priority: item.required ? "high" : "medium", duration: item.duration_minutes ?? 60, due_date: item.due_at ? String(item.due_at).slice(0, 10) : null, tags: ["file", item.item_type], recurrence: "none", subtasks: [], updated_at: new Date().toISOString() }, { onConflict: "user_id,local_id" });
-    if (todoError) throw todoError;
-    linkedTypes.push("todo"); linkedIds.push(String(localId));
+    const task = await createTask(userId, { sourceKind: item.imported_file_id ? "file" : "text", sourceId: itemId, title: String(item.title), dueDate: item.due_at ? String(item.due_at).slice(0, 10) : null, priority: item.required ? "high" : "medium", duration: item.duration_minutes ?? 60, tags: ["file", String(item.item_type)] });
+    taskLocalId = task.localId;
+    linkedTypes.push("todo"); linkedIds.push(String(task.localId));
   }
-  let calendarResult: Awaited<ReturnType<typeof createCalendarEvent>> | null = null;
+  let calendarResult: Awaited<ReturnType<typeof createCanonicalEvent>> | null = null;
   if (item.due_at && ["calendar_event", "deadline", "study_block"].includes(normalizedType)) {
     const at = new Date(item.due_at);
     const allDay = at.getUTCHours() === 0 && at.getUTCMinutes() === 0;
@@ -114,7 +117,14 @@ export async function commitExtractionItem(userId: string, itemId: string, overr
       sourceKind: item.imported_file_id ? "file" as const : "text" as const, sourceId: itemId, syncToGoogle: Boolean(googleAccounts),
     };
     console.info(JSON.stringify({ service: "file-conversion", stage: "calendar-payload", itemId, payload: calendarPayload }));
-    calendarResult = await createCalendarEvent(userId, calendarPayload);
+    if (normalizedType === "deadline") {
+      const deadline = await createDeadline(userId, { sourceKind: calendarPayload.sourceKind, sourceId: itemId, title: String(item.title), dueAt: String(item.due_at), timeZone: calendarPayload.timeZone, priority: calendarPayload.priority, notes: calendarPayload.notes, syncToGoogle: Boolean(googleAccounts) });
+      calendarResult = deadline.event;
+      taskLocalId = deadline.task.localId;
+      linkedTypes.push("todo", "deadline"); linkedIds.push(String(deadline.task.localId), deadline.id);
+    } else {
+      calendarResult = await createCanonicalEvent(userId, calendarPayload);
+    }
     linkedTypes.push("canonical_event"); linkedIds.push(calendarResult.canonicalEventId);
   }
   if (item.imported_file_id && item.item_type === "assignment" && ["task", "project", "deadline"].includes(normalizedType)) {
@@ -129,7 +139,7 @@ export async function commitExtractionItem(userId: string, itemId: string, overr
       const { data: assignment, error: assignmentError } = await supabase.from("academic_assignments").upsert({
         user_id: userId, course_id: imported.linked_course_id, canvas_id: assignmentId, course_canvas_id: course.canvas_id,
         title: item.title, description_html: item.description, due_at: item.due_at, estimated_minutes: item.duration_minutes ?? 60,
-        difficulty, priority: item.required ? "high" : "medium", todo_local_id: stableLocalId(itemId, "task"),
+        difficulty, priority: item.required ? "high" : "medium", todo_local_id: taskLocalId,
         plan_local_id: calendarResult?.planLocalId ?? null,
         raw_data: { source: "file", extractionItemId: itemId, ...payload }, updated_at: new Date().toISOString(),
       }, { onConflict: "user_id,canvas_id" }).select("id").single();
@@ -138,8 +148,11 @@ export async function commitExtractionItem(userId: string, itemId: string, overr
     }
   }
   const now = new Date().toISOString();
-  const linkedType = linkedTypes.length ? linkedTypes.join(",") : null;
-  const linkedId = linkedIds.length ? linkedIds.join(",") : null;
+  if (!linkedTypes.length && !["reference", "ignore", "course"].includes(normalizedType)) {
+    throw new Error(`No destination object was created for ${normalizedType}.`);
+  }
+  const linkedType = linkedTypes.length ? linkedTypes.join(",") : normalizedType;
+  const linkedId = linkedIds.length ? linkedIds.join(",") : itemId;
   const { data: updated, error: updateError } = await supabase.from("extraction_items").update({ review_status: "committed", normalized_type: normalizedType, linked_entity_type: linkedType, linked_entity_id: linkedId, updated_at: now }).eq("id", itemId).eq("user_id", userId).select("id,review_status,normalized_type,linked_entity_type,linked_entity_id").single();
   if (updateError) throw updateError;
   console.info(JSON.stringify({ service: "file-conversion", stage: "committed", itemId, normalizedType, linkedType, linkedId, googleSynced: calendarResult?.googleSynced ?? false, googleError: calendarResult?.googleError ?? null, database: updated }));

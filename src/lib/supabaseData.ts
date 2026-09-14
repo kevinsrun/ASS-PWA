@@ -283,12 +283,14 @@ async function replaceRows(
   }
   if (rows.length === 0) return;
 
-  const { error: insertError } = await supabase.from(table).insert(
-    rows.map((row) => ({
+  const uniqueRows = [...new Map(rows.map((row) => [String(row.local_id), row])).values()];
+  const { error: insertError } = await supabase.from(table).upsert(
+    uniqueRows.map((row) => ({
       ...row,
       user_id: userId,
       updated_at: new Date().toISOString(),
-    }))
+    })),
+    { onConflict: "user_id,local_id" }
   );
   if (insertError) {
     throw new Error(`Supabase ${table} insert failed: ${insertError.message}`);
