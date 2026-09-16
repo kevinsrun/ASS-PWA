@@ -19,6 +19,7 @@ const rows = { google_tokens: [{ id: 'account', user_id: 'user', calendar_time_z
 class Query {
   constructor(table) { this.table = table; }
   select() { return this; } order() { return this; } eq() { return this; } in() { return this; }
+  is() { return this; }
   limit() { return this; } maybeSingle() { this.single = true; return this; }
   insert() { return this; } update() { return this; }
   then(resolve) { return Promise.resolve({ data: this.single ? null : rows[this.table] ?? [], error: null }).then(resolve); }
@@ -40,10 +41,10 @@ const overrides = {
 function load(name) {
   if (overrides[name]) return overrides[name];
   if (!name.startsWith('@/')) return require(name);
-  const module = { exports: {} };
+  const loadedModule = { exports: {} };
   const code = ts.transpileModule(fs.readFileSync(path.resolve('src', name.slice(2) + '.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
-  new Function('require', 'module', 'exports', code)(load, module, module.exports);
-  return module.exports;
+  new Function('require', 'module', 'exports', code)(load, loadedModule, loadedModule.exports);
+  return loadedModule.exports;
 }
 const { validCronAuthorization, verifyCronRequest } = load('@/lib/cronAuth');
 assert.equal(validCronAuthorization('Bearer correct', 'correct'), true);

@@ -14,18 +14,19 @@ export async function POST(request: NextRequest) {
     attemptedItemId = body.itemId;
     const supabase = getServiceSupabaseClient();
     if (!supabase) throw new Error("A Supabase server key is not configured");
-    const { data: item, error } = await supabase.from("extraction_items").select("id,imported_file_id,imported_source_id,title,item_type,confidence,review_status").eq("id", body.itemId).eq("user_id", user.id).single();
+    const { data: item, error } = await supabase.from("extraction_items").select("id,imported_file_id,imported_source_id,title,description,payload,item_type,normalized_type,confidence,review_status").eq("id", body.itemId).eq("user_id", user.id).single();
     if (error || !item) throw new ApiAuthError("Extracted item not found.", 404);
     let conversionResult: Awaited<ReturnType<typeof commitExtractionItem>> | null = null;
     if (body.action === "approve") {
-      await supabase.from("extraction_items").update({ review_status: "approved", updated_at: new Date().toISOString() }).eq("id", body.itemId).eq("user_id", user.id);
+      const {error: reviewError} = await supabase.from("extraction_items").update({ review_status: "approved", ...(body.normalizedType && body.normalizedType !== item.normalized_type ? {manual_corrected_at:new Date().toISOString()} : {}), updated_at: new Date().toISOString() }).eq("id", body.itemId).eq("user_id", user.id);
+      if (reviewError) throw reviewError;
       conversionResult = await commitExtractionItem(user.id, body.itemId, { normalizedType: body.normalizedType });
     } else {
       await markExtractionItemIgnored(user.id, body.itemId);
     }
     await createEventDecision(user.id, { sourceKind: "file", sourceId: body.itemId, decision: body.action, context: { title: item.title, itemType: item.item_type, confidence: item.confidence } });
     await recordClassificationFeedback(user.id, {
-      sourceType: "file", sourceId: body.itemId, originalText: String(item.title),
+      sourceType: "file", sourceId: body.itemId, originalText: String(item.payload?.evidence_text ?? item.description ?? item.title),
       predictedLabel: String(item.item_type), confidence: Number(item.confidence),
       correctedLabel: body.normalizedType ?? null, userAction: body.action,
       context: { importedFileId: item.imported_file_id, importedSourceId: item.imported_source_id },

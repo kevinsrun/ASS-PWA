@@ -22,7 +22,7 @@ export async function ingestDriveFile(userId: string, accountId: string, fileId:
     if (sourceError || !source) throw sourceError ?? new Error("Could not create the Drive import");
     sourceId = String(source.id);
     await supabase.from("google_drive_files").upsert({ user_id: userId, google_account_id: accountId, drive_file_id: fileId, parent_drive_file_id: downloaded.metadata.parents?.[0] ?? null, name: downloaded.metadata.name, mime_type: downloaded.metadata.mimeType, modified_at: downloaded.metadata.modifiedTime ?? null, imported_source_id: sourceId, updated_at: new Date().toISOString() }, { onConflict: "user_id,google_account_id,drive_file_id" });
-    const analysis = await analyzeFile({ name: downloaded.name, mimeType: downloaded.mimeType, buffer: downloaded.buffer });
+    const analysis = await analyzeFile({ name: downloaded.name, mimeType: downloaded.mimeType, buffer: downloaded.buffer }, userId);
     const { data: extraction, error: extractionError } = await supabase.from("file_extractions").insert({ user_id: userId, imported_source_id: sourceId, model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash", classification: analysis.classification, confidence: analysis.confidence, summary: analysis.summary, structured_data: analysis.structuredData }).select("id").single();
     if (extractionError || !extraction) throw extractionError ?? new Error("Could not save Drive analysis");
     let items: Array<{ id: string; required: boolean; confidence: number; item_type: string }> = [];

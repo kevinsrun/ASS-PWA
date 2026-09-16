@@ -20,16 +20,16 @@ class Query {
 const overrides = {
   '@/lib/supabaseServer': { getServiceSupabaseClient: () => ({ from: table => new Query(table) }) },
   '@/lib/googleAuth': { listGoogleAccounts: async () => [{ id: 'account', connected_email: 'fixture@example.test', gmail_history_id: 'old' }], getGoogleAccessToken: async () => 'fixture-token' },
-  '@/lib/gemini': { rotateGeminiKey() {}, getGeminiModel: () => ({ generateContent: async prompt => ({ response: { text: () => invalid ? '{invalid' : JSON.stringify(JSON.parse(prompt.split('\nMessages:\n')[1]).map(message => ({ id: message.id, type: 'no_action', confidence: 1 }))) } }) }) },
+  '@/lib/gemini': { rotateGeminiKey() {}, getGeminiModel: () => ({ generateContent: async prompt => ({ response: { text: () => invalid ? '{invalid' : JSON.stringify(JSON.parse(prompt.split('\nMessages:\n')[1]).map(message => ({ id: message.id, type: 'no_action', confidence: 1, evidence_text:message.snippet }))) } }) }) },
   '@/lib/objectCreation': {},
 };
 function load(name) {
   if (overrides[name]) return overrides[name];
   if (!name.startsWith('@/')) return require(name);
-  const module = { exports: {} };
+  const loadedModule = { exports: {} };
   const code = ts.transpileModule(fs.readFileSync(path.resolve('src', name.slice(2) + '.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
-  new Function('require', 'module', 'exports', code)(load, module, module.exports);
-  return module.exports;
+  new Function('require', 'module', 'exports', code)(load, loadedModule, loadedModule.exports);
+  return loadedModule.exports;
 }
 const { scanRecentGmailSuggestions } = load('@/lib/gmailScan');
 const originalFetch = globalThis.fetch;

@@ -5,7 +5,7 @@ import { ApiAuthError, requireApiUser } from "@/lib/serverAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const MAX_BYTES = 25 * 1024 * 1024;
 const allowedExtensions = new Set(["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv", "png", "jpg", "jpeg"]);
@@ -55,8 +55,13 @@ export async function GET(request: NextRequest) {
     if (extractionError) throw extractionError;
     if (itemsError) throw itemsError;
     if (coursesError) throw coursesError;
-    const extractionByFile = new Map((extractions ?? []).map((row) => [String(row.imported_file_id), row]));
-    const extractionBySource = new Map((extractions ?? []).filter((row) => row.imported_source_id).map((row) => [String(row.imported_source_id), row]));
+    // Rows are newest first: keep the latest analysis, not the last/oldest one.
+    const extractionByFile = new Map<string,NonNullable<typeof extractions>[number]>();
+    const extractionBySource = new Map<string,NonNullable<typeof extractions>[number]>();
+    for (const row of extractions ?? []) {
+      if (row.imported_file_id && !extractionByFile.has(String(row.imported_file_id))) extractionByFile.set(String(row.imported_file_id),row);
+      if (row.imported_source_id && !extractionBySource.has(String(row.imported_source_id))) extractionBySource.set(String(row.imported_source_id),row);
+    }
     const courseById = new Map((courses ?? []).map((row) => [String(row.id), row]));
     const itemsByFile = new Map<string, typeof items>();
     const itemsBySource = new Map<string, typeof items>();
@@ -118,7 +123,7 @@ export async function POST(request: NextRequest) {
       throw insertError ?? new Error("Could not save the imported file");
     }
     fileId = String(imported.id);
-    const analysis = await analyzeFile({ name: file.name, mimeType, buffer });
+    const analysis = await analyzeFile({ name: file.name, mimeType, buffer }, user.id);
     let linkedCourseId = imported.linked_course_id ? String(imported.linked_course_id) : null;
     const courseName = String(analysis.structuredData.courseName ?? "").trim();
     if (!linkedCourseId && analysis.classification === "syllabus" && courseName) {

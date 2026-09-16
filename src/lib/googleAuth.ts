@@ -134,6 +134,7 @@ async function requestGoogleToken(params: URLSearchParams) {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString(),
     cache: "no-store",
+    signal: AbortSignal.timeout(20_000),
   });
   const body = (await response.json().catch(() => ({}))) as Record<
     string,
@@ -153,6 +154,7 @@ async function requestGoogleToken(params: URLSearchParams) {
 
 async function fetchGoogleIdentity(accessToken: string) {
   const response = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    signal: AbortSignal.timeout(15_000),
     headers: { Authorization: `Bearer ${accessToken}` },
     cache: "no-store",
   });
@@ -200,6 +202,7 @@ async function writeStoredToken(
   if (!supabase) throw new Error("A Supabase server key is not configured");
   const base = {
     user_id: userId,
+    disconnected_at: null,
     google_subject: identity.sub ?? null,
     connected_email: identity.email ?? null,
     display_name: identity.name ?? null,
@@ -286,6 +289,7 @@ export async function listGoogleAccounts(userId: string) {
     .from("google_tokens")
     .select("id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,scope,last_sync_status,last_sync_error,last_successful_sync_at,last_email_sync_at,gmail_history_id,calendar_time_zone")
     .eq("user_id", userId)
+    .is("disconnected_at", null)
     .order("updated_at", { ascending: false });
   if (error) throw new Error(`Unable to list Google accounts: ${error.message}`);
   return data ?? [];
@@ -297,7 +301,7 @@ export async function readStoredGoogleToken(userId: string, accountId?: string) 
   let query = supabase
     .from("google_tokens")
     .select("id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,access_token,refresh_token,scope,token_type,expires_at,last_successful_sync_at,last_email_sync_at,gmail_history_id,calendar_time_zone")
-    .eq("user_id", userId);
+    .eq("user_id", userId).is("disconnected_at", null);
   query = accountId ? query.eq("id", accountId) : query.order("updated_at", { ascending: false }).limit(1);
   const { data, error } = await query.maybeSingle();
   if (error) throw new Error(`Unable to read Google credentials: ${error.message}`);
@@ -341,12 +345,12 @@ async function refreshGoogleToken(userId: string, token: GoogleAccountRecord) {
     ...refreshed,
     refresh_token: refreshed.refresh_token ?? token.refresh_token,
   };
-  await writeStoredToken(userId, merged, {
-    sub: token.googleSubject ?? undefined,
-    email: token.email ?? undefined,
-    name: token.displayName ?? undefined,
-    picture: token.avatarUrl ?? undefined,
-  }, token.id);
+  const db=getServiceSupabaseClient();
+  if (!db) throw new Error("A Supabase server key is not configured");
+  // An in-flight refresh must never reactivate an account disconnected by the owner.
+  const {data:active,error}=await db.from("google_tokens").update({access_token:encrypt(merged.access_token),refresh_token:merged.refresh_token?encrypt(merged.refresh_token):null,expires_at:merged.expires_at??null,scope:merged.scope??null,updated_at:new Date().toISOString()}).eq("user_id",userId).eq("id",token.id).is("disconnected_at",null).select("id").maybeSingle();
+  if(error)throw new Error(`Unable to refresh stored Google credentials: ${error.message}`);
+  if(!active)throw new Error("This Google account was disconnected. Reconnect it to resume access.");
   return merged;
 }
 

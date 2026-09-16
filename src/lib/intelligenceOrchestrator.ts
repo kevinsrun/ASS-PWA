@@ -44,7 +44,7 @@ export async function runIntelligenceSync(triggerKind: "cron" | "manual" = "cron
     const { data: lease, error: leaseError } = await supabase.from("sync_locks").select("expires_at").eq("job_name", "intelligence_sync").maybeSingle();
     if (leaseError) throw leaseError;
     const reason = lease?.expires_at && Date.parse(lease.expires_at) > Date.now() ? "already_running" : "already_processed";
-    let users = supabase.from("google_tokens").select("user_id");
+    let users = supabase.from("google_tokens").select("user_id").is("disconnected_at", null);
     if (options.userId) users = users.eq("user_id", options.userId);
     const { data: usersData, error: usersError } = await users;
     if (usersError) throw usersError;
@@ -58,7 +58,7 @@ export async function runIntelligenceSync(triggerKind: "cron" | "manual" = "cron
     const { error: runError } = await supabase.from("intelligence_sync_runs").insert({ id: runId, status: "running", trigger_kind: triggerKind, details: { triggerSource: options.triggerSource ?? triggerKind, slot } });
     if (runError) throw runError;
     console.info(JSON.stringify({ service: "intelligence-sync", runId, stage: "sync-started", triggerKind }));
-    let audience = supabase.from("google_tokens").select("id,user_id,calendar_time_zone").order("user_id");
+    let audience = supabase.from("google_tokens").select("id,user_id,calendar_time_zone").is("disconnected_at", null).order("user_id");
     if (options.userId) audience = audience.eq("user_id", options.userId);
     const { data: connections, error } = await audience;
     if (error) throw error;

@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { DragEvent, useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, ChevronRight, FileCheck2, FileText, Inbox, LoaderCircle, Send, Upload, UserRound, X } from "lucide-react";
+import { AlertCircle, Check, ChevronRight, FileCheck2, FileText, Inbox, LoaderCircle, Send, Upload, UserRound } from "lucide-react";
 import type { EmailIntelligenceItem } from "@/lib/types";
 import { useAppContext } from "@/providers/AppProvider";
 import { useAuth } from "@/providers/AuthProvider";
+import ExtractionReview from "@/components/ExtractionReview";
 
 type ExtractionItem = {
   id: string;
@@ -17,6 +18,7 @@ type ExtractionItem = {
   required: boolean;
   normalized_type: string | null;
   review_status: "pending" | "approved" | "rejected" | "committed";
+  payload?: Record<string,unknown>;
 };
 
 type ImportedFile = {
@@ -182,19 +184,27 @@ export default function InboxPage() {
     finally { setBusy(null); if (chatGPTRef.current) chatGPTRef.current.value = ""; }
   }
 
-  async function review(itemId: string, action: "approve" | "reject") {
+  async function reanalyze(id:string,isFile:boolean) {
+    setBusy(`reanalyze:${id}`); setError(null);
+    try {
+      const response=await fetch("/api/files/reanalyze",{method:"POST",headers:{...headers(),"Content-Type":"application/json"},body:JSON.stringify(isFile ? {fileId:id} : {sourceId:id})});
+      const body=await response.json(); if(!response.ok)throw new Error(body.error ?? "Re-analysis failed");
+      setNotice("Re-analysis complete. Manual decisions were preserved. Review the new suggestions before creating anything."); await load();
+    } catch(error) {setError(error instanceof Error ? error.message : "Re-analysis failed");} finally {setBusy(null);}
+  }
+  async function review(itemId: string, action: "approve" | "reject", normalizedType?:string) {
     setBusy(itemId);
     setError(null);
     setNotice(null);
     try {
       const response = await fetch("/api/files/actions", {
-        method: "POST", headers: { ...headers(), "Content-Type": "application/json" }, body: JSON.stringify({ itemId, action, normalizedType: conversionTypes[itemId] }),
+        method: "POST", headers: { ...headers(), "Content-Type": "application/json" }, body: JSON.stringify({ itemId, action, normalizedType: normalizedType ?? conversionTypes[itemId] }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Could not save your decision");
       await load();
       await reloadCloud();
-      if (action === "approve") setNotice(body.warning ? `Created in ASS Calendar. Google sync needs attention: ${body.warning}` : "Converted successfully. Calendar and tasks are up to date.");
+      if (action === "approve") setNotice(body.warning ? `Saved in ASS. Google sync needs attention: ${body.warning}` : "Review saved. Only the selected object type was created.");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Could not save your decision");
     } finally {
@@ -310,29 +320,15 @@ export default function InboxPage() {
                   <span className={`file-status is-${file.status}`}>{human(file.status)}</span>
                 </div>
                 {file.processing_error ? <p className="file-failure">{file.processing_error}</p> : file.extraction?.summary ? <p className="file-summary">{file.extraction.summary}</p> : null}
-                {file.items.some((item) => item.review_status === "pending") ? (
-                  <div className="extraction-list">
-                    {file.items.filter((item) => item.review_status === "pending").map((item) => (
-                      <div key={item.id} className="extraction-item">
-                        <div><small>{human(item.item_type)} · {Math.round(Number(item.confidence) * 100)}% confidence</small><strong>{item.title}</strong>{item.due_at ? <time>{new Date(item.due_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</time> : null}</div>
-                        <div className="extraction-convert">
-                          <select aria-label={`Convert ${item.title} as`} value={conversionTypes[item.id] ?? item.normalized_type ?? (item.due_at ? "calendar_event" : "task")} onChange={(event) => setConversionTypes((current) => ({ ...current, [item.id]: event.target.value }))}>
-                            <option value="calendar_event">Calendar event</option><option value="deadline">Deadline + task</option><option value="study_block">Study block</option><option value="task">Task</option><option value="project">Project task</option><option value="course">Course</option><option value="reference">Reference only</option>
-                          </select>
-                          <button className="convert-button" disabled={busy === item.id} type="button" onClick={() => void review(item.id, "approve")}>{busy === item.id ? "Converting…" : "Convert"}</button>
-                          <button aria-label={`Ignore ${item.title}`} disabled={busy === item.id} type="button" onClick={() => void review(item.id, "reject")}><X size={17} /></button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
+                <button type="button" disabled={Boolean(busy)} onClick={() => void reanalyze(file.id,true)}>{busy === `reanalyze:${file.id}` ? "Re-analyzing…" : "Re-analyze"}</button>
+                <ExtractionReview items={file.items} busy={busy} conversionTypes={conversionTypes} onChange={(id,value)=>setConversionTypes(current=>({...current,[id]:value}))} onReview={(id,action,type)=>void review(id,action,type)} />
               </article>
             ))}
           </div>
         )}
       </section>
 
-      {texts.length ? <section className="inbox-section"><div className="inbox-section-title"><span>Text imports</span><small>{texts.length}</small></div><div className="file-list">{texts.map((source) => <article key={source.id} className="file-card"><div className="file-card-heading"><FileText size={20} /><div><h2>{source.title}</h2><p>{human(source.source_type)} · Added {new Date(source.created_at).toLocaleDateString()}</p></div><span className={`file-status is-${source.processing_status}`}>{human(source.processing_status)}</span></div>{source.processing_error ? <p className="file-failure">{source.processing_error}</p> : source.extraction?.summary ? <p className="file-summary">{source.extraction.summary}</p> : null}{source.items.some((item) => item.review_status === "pending") ? <div className="extraction-list">{source.items.filter((item) => item.review_status === "pending").map((item) => <div key={item.id} className="extraction-item"><div><small>{human(item.item_type)} · {Math.round(Number(item.confidence) * 100)}% confidence</small><strong>{item.title}</strong>{item.due_at ? <time>{new Date(item.due_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</time> : null}</div><div className="extraction-convert"><select aria-label={`Convert ${item.title} as`} value={conversionTypes[item.id] ?? item.normalized_type ?? (item.due_at ? "calendar_event" : "task")} onChange={(event) => setConversionTypes((current) => ({ ...current, [item.id]: event.target.value }))}><option value="calendar_event">Calendar event</option><option value="deadline">Deadline + task</option><option value="study_block">Study block</option><option value="task">Task</option><option value="project">Project task</option><option value="reference">Reference only</option></select><button className="convert-button" disabled={busy === item.id} type="button" onClick={() => void review(item.id, "approve")}>{busy === item.id ? "Converting…" : "Convert"}</button><button aria-label={`Ignore ${item.title}`} disabled={busy === item.id} type="button" onClick={() => void review(item.id, "reject")}><X size={17} /></button></div></div>)}</div> : null}</article>)}</div></section> : null}
+      {texts.length ? <section className="inbox-section"><div className="inbox-section-title"><span>Text imports</span><small>{texts.length}</small></div><div className="file-list">{texts.map(source=><article key={source.id} className="file-card"><div className="file-card-heading"><FileText size={20}/><div><h2>{source.title}</h2><p>{human(source.source_type)}</p></div><span className={`file-status is-${source.processing_status}`}>{human(source.processing_status)}</span></div>{source.processing_error ? <p className="file-failure">{source.processing_error}</p> : source.extraction?.summary ? <p className="file-summary">{source.extraction.summary}</p> : null}<button type="button" disabled={Boolean(busy)} onClick={()=>void reanalyze(source.id,false)}>{busy===`reanalyze:${source.id}` ? "Re-analyzing…" : "Re-analyze"}</button><ExtractionReview items={source.items} busy={busy} conversionTypes={conversionTypes} onChange={(id,value)=>setConversionTypes(current=>({...current,[id]:value}))} onReview={(id,action,type)=>void review(id,action,type)}/></article>)}</div></section> : null}
     </main>
   );
 }

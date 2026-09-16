@@ -6,7 +6,7 @@ import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import { classifyWritingSpans } from "@/lib/writingStyle";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const sourceTypes = new Set(["pasted_text", "manual_text", "imessage"]);
 
@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
     sourceId = String(source.id);
     const { error: textError } = await supabase.from("imported_texts").insert({ user_id: user.id, imported_source_id: sourceId, title, content });
     if (textError) throw textError;
-    const analysis = await analyzeFile({ name: `${title}.txt`, mimeType: "text/plain", buffer: Buffer.from(content) });
+    const analysis = await analyzeFile({ name: `${title}.txt`, mimeType: "text/plain", buffer: Buffer.from(content) }, user.id);
     const { data: extraction, error: extractionError } = await supabase.from("file_extractions").insert({
       user_id: user.id, imported_source_id: sourceId, model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
       classification: analysis.classification, confidence: analysis.confidence, summary: analysis.summary, structured_data: analysis.structuredData,
@@ -44,6 +44,7 @@ export async function POST(request: NextRequest) {
         title: item.title, description: item.description, due_at: item.dueAt, duration_minutes: item.durationMinutes,
         time_zone: item.timeZone, recurrence_rule: item.recurrenceRule, location: item.location,
         confidence: item.confidence, required: item.required, payload: item.payload,
+        optionality: item.optionality, attendance_policy: item.attendancePolicy, classification_reason: item.classificationReason,
       }))).select("id,required,confidence,item_type");
       if (error) throw error;
       items = data ?? [];

@@ -4,6 +4,7 @@ import { assistantActionTypes, executeAssistantActions, type AssistantAction, ty
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
 import { ApiAuthError, requireApiUser } from "@/lib/serverAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
+import { scheduleReasoningRules, priorityRankingRules } from "@/lib/intelligencePrompts";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -43,17 +44,23 @@ export async function POST(request: NextRequest) {
     }
     const message = String(body.message ?? "").trim();
     if (!message) throw new ApiAuthError("A chat message is required.", 400);
-    const [plans, todos, profile, memory] = await Promise.all([
+    const [plans, todos, profile, memory, courses, feedback, events, emails] = await Promise.all([
       supabase.from("plans").select("local_id,canonical_event_id,title,date,start_label,end_label,category,priority,source,google_event_id").eq("user_id", user.id).order("date").limit(300),
       supabase.from("todos").select("local_id,title,due_date,priority,done").eq("user_id", user.id).eq("done", false).limit(200),
       supabase.from("profiles").select("display_name,primary_email,gmail_connected").eq("user_id", user.id).maybeSingle(),
       supabase.from("personal_memory").select("kind,category,statement,confidence,importance").eq("user_id", user.id).eq("active", true).order("importance", { ascending: false }).limit(40),
+      supabase.from("academic_courses").select("name,course_code,status").eq("user_id",user.id).limit(30),
+      supabase.from("classification_feedback").select("original_text,user_corrected_label,user_action").eq("user_id",user.id).order("created_at",{ascending:false}).limit(20),
+      supabase.from("canonical_events").select("*").eq("user_id",user.id).is("deleted_at",null).eq("hidden_from_calendar",false).limit(300),
+      supabase.from("email_suggestions").select("title,summary,date,time,intelligence_type,importance,action_required,confidence").eq("user_id",user.id).eq("status","pending").order("processed_at",{ascending:false}).limit(25),
     ]);
-    const queryError = [plans, todos, profile, memory].find((result) => result.error)?.error;
+    const queryError = [plans, todos, profile, memory, courses, feedback, events, emails].find((result) => result.error)?.error;
     if (queryError) throw queryError;
     await supabase.from("assistant_action_runs").insert({ id: runId, user_id: user.id, request_text: message });
     const prompt = `You are ASS, a concise executive assistant. Return strict JSON only with shape {"reply":"...","actions":[]}.
 Current time: ${new Date().toISOString()}. User timezone: ${body.timeZone ?? "America/New_York"}.
+${scheduleReasoningRules}
+${priorityRankingRules}
 For ordinary conversation, actions is empty. For scheduling/action intent, provide executable structured actions and do not claim success in reply.
 Every explicit request using schedule, add to calendar, block time, create a task, remind me, or add a deadline MUST emit the corresponding action. Do this even if the requested time appears to conflict; never resolve conflicts in prose because the executor is authoritative and will return alternatives.
 Allowed action types: ${assistantActionTypes.join(", ")}.
@@ -63,6 +70,10 @@ Never invent an existing object ID. If an update/delete target cannot be identif
 Do not move classes, labs, exams, work, interviews, or required meetings unless explicitly requested. Never claim completion; execution writes the final reply.
 Calendar: ${JSON.stringify(plans.data ?? [])}
 Open tasks: ${JSON.stringify(todos.data ?? [])}
+Canonical commitments including recurrence and optionality: ${JSON.stringify(events.data ?? [])}
+Classes: ${JSON.stringify(courses.data ?? [])}
+Pending email decisions (not confirmed commitments): ${JSON.stringify(emails.data ?? [])}
+User corrections: ${JSON.stringify(feedback.data ?? [])}
 Profile: ${JSON.stringify(profile.data ?? {})}
 Personal memory (use this to rank importance and recommendations; never override explicit user instructions): ${JSON.stringify(memory.data ?? [])}
 Recent chat: ${JSON.stringify((body.messages ?? []).slice(-12))}

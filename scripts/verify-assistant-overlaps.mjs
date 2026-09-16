@@ -21,10 +21,10 @@ function load(name) {
   if (!name.startsWith("@/")) return require(name);
   if (cache.has(name)) return cache.get(name);
   const file = path.resolve("src", name.slice(2) + ".ts");
-  const module = { exports: {} }; cache.set(name, module.exports);
+  const loadedModule = { exports: {} }; cache.set(name, loadedModule.exports);
   const code = ts.transpileModule(fs.readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
-  new Function("require", "module", "exports", code)(load, module, module.exports);
-  return module.exports;
+  new Function("require", "module", "exports", code)(load, loadedModule, loadedModule.exports);
+  return loadedModule.exports;
 }
 class Query {
   constructor(rows) { this.rows = rows; this.filters = []; }

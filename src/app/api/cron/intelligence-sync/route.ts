@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
   console.info(JSON.stringify({ service: "intelligence-sync", stage: "cron-triggered", ...schedule }));
   if (!schedule.shouldRun && !developmentForce) {
     const supabase = getServiceSupabaseClient();
-    const { data: accounts } = await supabase?.from("google_tokens").select("user_id") ?? { data: [] };
+    const { data: accounts } = await supabase?.from("google_tokens").select("user_id").is("disconnected_at", null) ?? { data: [] };
     const userIds = [...new Set((accounts ?? []).map((account) => String(account.user_id)))];
     await supabase?.from("intelligence_sync_runs").insert({ user_ids: userIds, status: "skipped", trigger_kind: "cron", skip_reason: schedule.reason, completed_at: new Date().toISOString(), details: schedule });
     console.info(JSON.stringify({ service: "intelligence-sync", stage: "cron-skipped", reason: schedule.reason }));

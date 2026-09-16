@@ -10,6 +10,7 @@ import {
 } from "react";
 import { Session, User } from "@supabase/supabase-js";
 import { getBrowserSupabaseClient } from "@/lib/supabaseBrowser";
+import { logoutFromAss } from "@/lib/logout";
 
 type AuthContextType = {
   configured: boolean;
@@ -73,7 +74,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return error?.message ?? null;
       },
       async signOut() {
-        await supabase?.auth.signOut();
+        if (!supabase) return;
+        await logoutFromAss({ signOut: () => supabase.auth.signOut({ scope: "local" }), clearState: () => setSession(null), local: window.localStorage, session: window.sessionStorage, navigate: path => window.location.replace(path) });
       },
     }),
     [loading, session, supabase]
