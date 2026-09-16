@@ -1,0 +1,46 @@
+name: ASS intelligence sync
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: ass-intelligence-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Trigger secured background intelligence
+        env:
+          ASS_CRON_URL: ${{ secrets.ASS_CRON_URL }}
+          ASS_CRON_SECRET: ${{ secrets.ASS_CRON_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ASS_CRON_URL" && test -n "$ASS_CRON_SECRET"
+          [[ "$ASS_CRON_URL" == https://* ]]
+          for delay in 0 5 15; do
+            sleep "$delay"
+            code=$(curl --silent --show-error --output /tmp/ass-sync.json --write-out '%{http_code}' \
+              --connect-timeout 15 --max-time 310 --request POST \
+              --header "Authorization: Bearer $ASS_CRON_SECRET" \
+              --header 'X-ASS-Trigger: github-actions' \
+              "${ASS_CRON_URL%/}/api/cron/intelligence-sync") || code=000
+            if [[ "$code" == 200 ]]; then
+              jq '{status,skipped,reason,runId,accountsScanned,emailsScanned,calendarEventsScanned,actionItemsCreated}' /tmp/ass-sync.json
+              exit 0
+            fi
+            if [[ "$code" == 207 ]]; then
+              echo '::error::Background sync was partial. Inspect ASS Automation for integration errors.'
+              jq '{status,runId}' /tmp/ass-sync.json
+              exit 1
+            fi
+            if [[ "$code" != 000 && "$code" != 429 && "$code" != 5* ]]; then
+              echo "::error::Cron rejected request (HTTP $code); check endpoint and scheduler secret."
+              exit 1
+            fi
+          done
+          echo '::error::Cron unavailable after bounded retries.'
+          exit 1

@@ -13,6 +13,7 @@ type ChangePage = {
 
 async function driveFetch<T>(token: string, path: string) {
   const response = await fetch(`https://www.googleapis.com/drive/v3/${path}`, {
+    signal: AbortSignal.timeout(20_000),
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });

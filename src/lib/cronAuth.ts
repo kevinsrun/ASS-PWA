@@ -1,4 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash, timingSafeEqual } from "crypto";
+
+export function validCronAuthorization(authorization: string | null, secret: string | undefined) {
+  if (!secret || !authorization) return false;
+  return timingSafeEqual(createHash("sha256").update(authorization).digest(), createHash("sha256").update(`Bearer ${secret}`).digest());
+}
 
 export function verifyCronRequest(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
@@ -11,7 +17,7 @@ export function verifyCronRequest(req: NextRequest) {
   }
 
   const authorization = req.headers.get("authorization");
-  if (authorization === `Bearer ${secret}`) {
+  if (validCronAuthorization(authorization, secret)) {
     return null;
   }
 

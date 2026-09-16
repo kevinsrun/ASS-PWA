@@ -21,7 +21,9 @@ async function destinationExists(userId: string, item: Record<string, unknown>) 
   const canonicalId = destination.get("canonical_event");
   if (!canonicalId) return false;
   const { data } = await supabase.from("canonical_events").select("id,deleted_at,hidden_from_calendar").eq("id", canonicalId).eq("user_id", userId).maybeSingle();
-  if (!data || data.deleted_at || data.hidden_from_calendar) return false;
+  // A tombstone or hidden event is an intentional user decision, not a broken conversion.
+  if (data?.deleted_at || data?.hidden_from_calendar) return true;
+  if (!data) return false;
   const { count } = await supabase.from("plans").select("local_id", { count: "exact", head: true }).eq("user_id", userId).eq("canonical_event_id", canonicalId);
   return Boolean(count);
 }
@@ -38,6 +40,8 @@ export async function reconcileExtractedItems(userId: string, triggerKind: Trigg
     for (const item of data ?? []) {
       result.scanned += 1;
       const wasCommitted = item.review_status === "committed";
+      // Background repair must not promote optional, ignored, or unapproved suggestions.
+      if (triggerKind === "cron" && !wasCommitted) { result.skipped += 1; continue; }
       try {
         if (wasCommitted && await destinationExists(userId, item)) { result.skipped += 1; continue; }
         await commitExtractionItem(userId, String(item.id), { force: true });

@@ -10,7 +10,7 @@ export const maxDuration = 300;
 export async function GET(request: NextRequest) {
   const unauthorized = verifyCronRequest(request);
   if (unauthorized) return unauthorized;
-  const schedule = intelligenceScheduleDecision(new Date(), "daily");
+  const schedule = intelligenceScheduleDecision();
   const developmentForce = process.env.NODE_ENV !== "production" && request.nextUrl.searchParams.get("force") === "1";
   console.info(JSON.stringify({ service: "intelligence-sync", stage: "cron-triggered", ...schedule }));
   if (!schedule.shouldRun && !developmentForce) {
@@ -22,9 +22,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: true, skipped: true, ...schedule });
   }
   try {
-    const result = await runIntelligenceSync("cron");
-    return NextResponse.json({ ok: result.status === "completed", ...result }, { status: result.status === "partial" ? 207 : 200 });
+    const source = request.headers.get("x-ass-trigger") === "github-actions" ? "github-actions" : "external";
+    const result = await runIntelligenceSync("cron", { triggerSource: source });
+    return NextResponse.json({ ok: result.status !== "partial", ...result }, { status: result.status === "partial" ? 207 : 200 });
   } catch (error) {
     return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "Unknown intelligence sync failure" }, { status: 500 });
   }
 }
+
+export const POST = GET;

@@ -1,13 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ApiAuthError, requireApiUser } from "@/lib/serverAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
-
-function nextExpectedRun() {
-  const candidate = new Date();
-  candidate.setUTCHours(13, 0, 0, 0);
-  if (candidate.getTime() <= Date.now()) candidate.setUTCDate(candidate.getUTCDate() + 1);
-  return candidate.toISOString();
-}
+import { nextIntelligenceCheck } from "@/lib/intelligenceSchedule";
 
 export async function GET(request: NextRequest) {
   try {
@@ -26,7 +20,7 @@ export async function GET(request: NextRequest) {
     const error = [accounts, drive, runs, drafts, actions, extractions, assistantRuns].find((result) => result.error)?.error;
     if (error) throw error;
     return NextResponse.json({
-      nextExpectedRun: nextExpectedRun(), accounts: accounts.data ?? [], drive: drive.data ?? [],
+      nextExpectedRun: nextIntelligenceCheck(), scheduler: "GitHub Actions / External", accounts: accounts.data ?? [], drive: drive.data ?? [],
       runs: runs.data ?? [], draftsWaiting: drafts.count ?? 0, decisionsWaiting: actions.count ?? 0,
       classifications: extractions.data ?? [],
       assistantRuns: assistantRuns.data ?? [],

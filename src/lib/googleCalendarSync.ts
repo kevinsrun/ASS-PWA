@@ -217,6 +217,7 @@ async function googleRequest<T>(
   try {
     response = await fetch(url, {
       ...init,
+      signal: init.signal ?? AbortSignal.timeout(20_000),
       headers: {
         Authorization: `Bearer ${accessToken}`,
         ...(init.body ? { "Content-Type": "application/json" } : {}),

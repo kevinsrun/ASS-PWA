@@ -5,6 +5,8 @@ import { getGoogleAccessToken, listGoogleAccounts } from "@/lib/googleAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import { createAssistantAction, createCanonicalEvent, createDeadline, createEmailDraft, createEventDecision, createTask } from "@/lib/objectCreation";
 import type { EmailIntelligenceItem, PlanCategory } from "@/lib/types";
+import { conflictsForInterval } from "@/lib/conflictEngine";
+import { calendarLocalIso } from "@/lib/academicSchedule";
 
 type GmailMessageList = { messages?: Array<{ id: string; threadId?: string }> };
 type GmailMessage = {
@@ -86,6 +88,7 @@ function header(message: GmailMessage, name: string) {
 
 async function gmailFetch<T>(url: string, accessToken: string, attempt = 0): Promise<T> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(20_000),
     headers: { Authorization: `Bearer ${accessToken}` },
     cache: "no-store",
   });
@@ -109,12 +112,16 @@ async function fetchMessages(ids: string[], accessToken: string) {
   // Gmail applies per-user rate limits. Small batches prevent a first scan from
   // turning 25 parallel metadata calls into a burst-limit failure.
   for (let index = 0; index < ids.length; index += 4) {
-    messages.push(...await Promise.all(
-      ids.slice(index, index + 4).map((id) => gmailFetch<GmailMessage>(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Reply-To&metadataHeaders=Date&metadataHeaders=Message-ID`,
-        accessToken
-      ))
-    ));
+    const batch = await Promise.all(ids.slice(index, index + 4).map(async (id) => {
+      try {
+        return await gmailFetch<GmailMessage>(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Reply-To&metadataHeaders=Date&metadataHeaders=Message-ID`, accessToken);
+      } catch (error) {
+        if (!String(error).includes("Gmail returned HTTP 404")) throw error;
+        console.info(JSON.stringify({ service: "gmail-intelligence", stage: "message-no-longer-available", messageId: id }));
+        return null;
+      }
+    }));
+    messages.push(...batch.filter((message): message is GmailMessage => message !== null));
   }
   return messages;
 }
@@ -180,11 +187,11 @@ Messages:
 ${JSON.stringify(input)}`;
   let result;
   try {
-    result = await getGeminiModel().generateContent(prompt);
+    result = await getGeminiModel().generateContent(prompt, { timeout: 45_000 });
   } catch (error) {
     if (!String(error).includes("429")) throw error;
     rotateGeminiKey();
-    result = await getGeminiModel().generateContent(prompt);
+    result = await getGeminiModel().generateContent(prompt, { timeout: 45_000 });
   }
   try {
     const parsed = JSON.parse(
@@ -195,56 +202,12 @@ ${JSON.stringify(input)}`;
         .filter((item) => typeof item?.id === "string")
         .map((item) => [String(item.id), item])
     );
+    if (messages.some((message) => !byId.has(message.id))) throw new Error("Gemini did not classify every email; leaving the Gmail cursor unchanged for retry.");
     return messages.map((message) => safeClassification(message, byId.get(message.id)));
   } catch (error) {
     console.error(JSON.stringify({ service: "gmail-intelligence", stage: "invalid-model-json", message: error instanceof Error ? error.message : "Invalid JSON" }));
-    return messages.map((message) => safeClassification(message));
+    throw new Error("Gemini returned invalid or incomplete email classifications; no emails were marked ignored.");
   }
-}
-
-function minutes(value: string) {
-  const [hour, minute] = value.split(":").map(Number);
-  return hour * 60 + minute;
-}
-
-function conflictAnalysis(
-  item: Classification,
-  plans: Array<{ title: string; date: string; start_label: string; end_label: string; priority: string }>
-) {
-  if (!item.date || !item.time || !["meeting", "club_event", "interview", "travel"].includes(item.type)) {
-    return { conflicts: [] as string[], recommendations: item.recommendations ?? [] };
-  }
-  const start = minutes(item.time);
-  const end = start + Math.max(15, item.duration || 60);
-  const overlaps = plans.filter((plan) => {
-    if (plan.date !== item.date) return false;
-    const planStart = minutes(plan.start_label);
-    const planEnd = minutes(plan.end_label);
-    return start < planEnd && planStart < end;
-  });
-  if (overlaps.length === 0) {
-    return {
-      conflicts: [],
-      recommendations: [`Would you like to attend ${item.title}?`, ...(item.recommendations ?? [])],
-    };
-  }
-  const conflicts = overlaps.map(
-    (plan) => `${plan.title} (${plan.start_label}–${plan.end_label})`
-  );
-  const movable = overlaps.find((plan) => plan.priority !== "high");
-  return {
-    conflicts,
-    recommendations: movable
-      ? [
-          `Move ${movable.title} to the next open block after the event.`,
-          `Keep ${movable.title} and decline ${item.title}.`,
-          ...(item.recommendations ?? []),
-        ]
-      : [
-          `Decline ${item.title}; it conflicts with a high-priority commitment.`,
-          ...(item.recommendations ?? []),
-        ],
-  };
 }
 
 async function contextForUser(userId: string) {
@@ -292,19 +255,29 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
       await supabase.from("google_tokens").update({ email_sync_status: "syncing", email_sync_error: null }).eq("id", accountId).eq("user_id", userId);
       const accessToken = await getGoogleAccessToken(userId, accountId);
       const incremental = await incrementalMessageIds(accessToken, account.gmail_history_id ? String(account.gmail_history_id) : null);
-      const ids = incremental.ids;
+      const { data: unfinished, error: unfinishedError } = await supabase.from("email_messages").select("google_message_id,email_extractions!inner(status)").eq("user_id", userId).eq("google_account_id", accountId).in("email_extractions.status", ["classified", "failed"]).limit(10);
+      if (unfinishedError) throw unfinishedError;
+      const ids = [...new Set([...incremental.ids, ...(unfinished ?? []).map((message) => String(message.google_message_id))])];
       const { data: existing } = ids.length
-        ? await supabase.from("email_suggestions").select("external_id").eq("user_id", userId).eq("google_account_id", accountId).in("external_id", ids)
+        ? await supabase.from("email_suggestions").select("external_id,status").eq("user_id", userId).eq("google_account_id", accountId).in("external_id", ids)
         : { data: [] };
-      const seen = new Set((existing ?? []).map((row) => String(row.external_id)));
+      const unfinishedIds = new Set((unfinished ?? []).map((message) => String(message.google_message_id)));
+      const seen = new Set((existing ?? []).filter((row) => row.status !== "pending" || !unfinishedIds.has(String(row.external_id))).map((row) => String(row.external_id)));
       const messages = await fetchMessages(ids.filter((id) => !seen.has(id)), accessToken);
       emailsScanned += messages.length;
       const classifications = await classify(messages, context.prompt);
       const byId = new Map(classifications.map((item) => [item.id, item]));
       const processedAt = new Date().toISOString();
-      const rows = messages.map((message) => {
+      const rows = await Promise.all(messages.map(async (message) => {
         const item = safeClassification(message, byId.get(message.id));
-        const analysis = conflictAnalysis(item, context.plans);
+        let analysis = { conflicts: [] as string[], recommendations: item.recommendations ?? [] };
+        if (item.date && item.time && ["meeting", "club_event", "interview", "travel"].includes(item.type)) {
+          const zone = String(account.calendar_time_zone ?? "America/New_York");
+          const startAt = calendarLocalIso(item.date, formatTimeLabel(item.time), zone);
+          const endAt = new Date(Date.parse(startAt) + item.duration * 60_000).toISOString();
+          const checked = await conflictsForInterval(userId, { id: `gmail:${accountId}:${message.id}`, title: item.title, startAt, endAt });
+          analysis = { conflicts: checked.conflicts.map((conflict) => `${conflict.eventB}: ${conflict.overlapMinutes} minutes overlap (${conflict.eventBStart}–${conflict.eventBEnd})`), recommendations: checked.conflicts.length ? ["Review the conflicting commitments before deciding to attend."] : [`Would you like to attend ${item.title}?`] };
+        }
         const receivedAt = message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null;
         all.push({ id: `${accountId}:${message.id}`, accountEmail: String(account.connected_email ?? "Google account"), sender: header(message, "From"), title: item.title, summary: item.summary, type: item.type, importance: item.importance, actionRequired: item.actionRequired, date: item.date, time: item.time, conflictDetails: analysis.conflicts, recommendations: analysis.recommendations, receivedAt });
         return {
@@ -320,7 +293,7 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
           conflict_details: analysis.conflicts, recommendations: analysis.recommendations,
           processed_at: processedAt, status: item.type === "no_action" ? "dismissed" : "pending",
         };
-      });
+      }));
       if (rows.length > 0) {
         const { data: storedMessages, error: messageError } = await supabase.from("email_messages").upsert(messages.map((message) => ({
           user_id: userId,
@@ -403,6 +376,8 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
           });
           if (assistantAction.created) actionItemsCreated += 1;
         }
+        const { error: registeredError } = await supabase.from("email_extractions").update({ status: "created", updated_at: processedAt }).eq("user_id", userId).in("email_message_id", [...messageIdByExternalId.values()]).neq("status", "ignored");
+        if (registeredError) throw registeredError;
       }
       const { error: stateError } = await supabase.from("google_tokens").update({ gmail_history_id: incremental.newestHistoryId, last_email_sync_at: processedAt, email_sync_status: "synced", email_sync_error: null, updated_at: processedAt }).eq("id", accountId).eq("user_id", userId);
       if (stateError) throw stateError;

@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import { useAuth } from "@/providers/AuthProvider";
 
 type Status = {
+  scheduler: string;
   nextExpectedRun: string | null;
   accounts: Array<Record<string, unknown>>;
   drive: Array<Record<string, unknown>>;
@@ -35,20 +36,33 @@ export default function SyncDebugPage() {
   const [error, setError] = useState("");
   const [integrity, setIntegrity] = useState<Integrity | null>(null);
   const [working, setWorking] = useState(false);
-  async function load() {
+  async function runNow() {
+    if (!session?.access_token) return;
+    setWorking(true);
+    try {
+      const response = await fetch("/api/intelligence/run", { method: "POST", headers: { Authorization: `Bearer ${session.access_token}` } });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Background sync failed.");
+      await load();
+      if (body.status === "partial") setError("Sync completed with integration errors. See Recent runs.");
+      if (body.skipped) setError("Another background run is active. Try again after it finishes.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Sync failed."); }
+    finally { setWorking(false); }
+  }
+  const load = useCallback(async () => {
     if (!session?.access_token) return;
     const response = await fetch("/api/intelligence/status", { headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store" });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error ?? "Sync status is unavailable.");
     setStatus(body); setError("");
-  }
-  async function loadIntegrity() {
+  }, [session?.access_token]);
+  const loadIntegrity = useCallback(async () => {
     if (!session?.access_token) return;
     const response = await fetch("/api/debug/calendar-integrity", { headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store" });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error ?? "Calendar integrity data is unavailable.");
     setIntegrity(body);
-  }
+  }, [session?.access_token]);
   async function integrityAction(action: "reconcile" | "retry_item", itemId?: string) {
     if (!session?.access_token) return;
     setWorking(true);
@@ -60,14 +74,14 @@ export default function SyncDebugPage() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Calendar integrity action failed."); }
     finally { setWorking(false); }
   }
-  useEffect(() => { void Promise.all([load(), loadIntegrity()]).catch((reason) => setError(reason instanceof Error ? reason.message : "Sync status is unavailable.")); }, [session?.access_token]);
+  useEffect(() => { void Promise.all([load(), loadIntegrity()]).catch((reason) => setError(reason instanceof Error ? reason.message : "Sync status is unavailable.")); }, [load, loadIntegrity]);
   return (
     <main className="now-page">
       <header className="now-header"><div><p>Developer</p><h1>Intelligence sync</h1></div><button type="button" onClick={() => void load()} aria-label="Refresh sync status"><RefreshCw size={19} /></button></header>
       <Link href="/profile" className="quiet-empty"><ArrowLeft size={17} />Back to profile</Link>
       {error ? <section className="focus-surface"><span>Sync error</span><h2>{error}</h2></section> : null}
       {status ? <>
-        <section className="now-section"><div className="now-section-title"><span>Overview</span></div><div className="essential-tasks"><p>Next expected run: {when(status.nextExpectedRun)}</p><p>{status.draftsWaiting} drafts waiting · {status.decisionsWaiting} decisions waiting</p></div></section>
+        <section className="now-section"><div className="now-section-title"><span>Automation</span><button type="button" disabled={working} onClick={() => void runNow()}>{working ? "Running…" : "Run now"}</button></div><div className="essential-tasks"><p>Scheduler: {status.scheduler}</p><p>Last trigger: {when(status.runs[0]?.started_at)}</p><p>Last successful run: {when(status.runs.find((run) => run.status === "completed")?.completed_at)}</p><p>Next expected check: {when(status.nextExpectedRun)} (provider delays possible)</p><p>{status.draftsWaiting} drafts waiting · {status.decisionsWaiting} decisions waiting</p></div></section>
         <section className="now-section"><div className="now-section-title"><span>Accounts</span></div><div className="assistant-insights">{status.accounts.map((account) => { const drive = status.drive.find((item) => item.google_account_id === account.id); return <article key={String(account.id)}><div className="assistant-insight-copy"><small>{String(account.connected_email ?? "Google account")}</small><strong>Calendar: {String(account.last_sync_status ?? "unknown")} · Gmail: {String(account.email_sync_status ?? "unknown")}</strong><p>Calendar {when(account.last_successful_sync_at)} · Gmail {when(account.last_email_sync_at)} · Drive {when(drive?.last_successful_sync_at)}</p>{account.last_sync_error || account.email_sync_error || drive?.last_sync_error ? <span>{String(account.last_sync_error ?? account.email_sync_error ?? drive?.last_sync_error)}</span> : null}</div></article>; })}</div></section>
         <section className="now-section"><div className="now-section-title"><span>Recent runs</span></div><div className="assistant-insights">{status.runs.map((run) => <article key={String(run.id)}><div className="assistant-insight-copy"><small>{when(run.started_at)} · {String(run.trigger_kind)}</small><strong>{String(run.status)}{run.skip_reason ? ` — ${String(run.skip_reason).replaceAll("_", " ")}` : ""}</strong><p>{Number(run.accounts_scanned)} accounts · {Number(run.emails_scanned)} emails · {Number(run.calendar_events_scanned)} calendar · {Number(run.drive_files_scanned)} Drive · {Number(run.action_items_created)} actions · {Number(run.drafts_created)} drafts</p>{Array.isArray(run.errors) && run.errors.length ? <span>{run.errors.map(String).join(" · ")}</span> : null}</div></article>)}</div></section>
         <section className="now-section"><div className="now-section-title"><span>Recent classifications</span></div><div className="essential-tasks">{status.classifications.slice(0, 10).map((item) => <p key={String(item.id)}>{String(item.predicted_label).replaceAll("_", " ")} · {Math.round(Number(item.confidence) * 100)}% · {String(item.status)}</p>)}</div></section>
