@@ -28,6 +28,7 @@ function toParts(value: string, timeZone: string) {
   if (!/T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) throw new Error("Scheduling requires an ISO date/time with an explicit timezone offset.");
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error(`Invalid date/time: ${value}`);
+  if (date.getUTCSeconds() || date.getUTCMilliseconds()) throw new Error("Calendar scheduling requires whole-minute times.");
   return {
     date: date.toLocaleDateString("en-CA", { timeZone }),
     label: date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone }),
@@ -39,7 +40,8 @@ async function conflictCheck(userId: string, action: AssistantAction, timeZone: 
   if (!action.start || !action.end) return { conflicts: [] as string[], suggestedAction: undefined as AssistantAction | undefined };
   const start = toParts(action.start, timeZone); const end = toParts(action.end, timeZone);
   if (end.instant <= start.instant) throw new Error("End time must be after start time.");
-  const checked = await conflictsForInterval(userId, { id: action.canonicalEventId ?? action.sourceId ?? "proposed", title: action.title ?? "Proposed event", startAt: start.instant.toISOString(), endAt: end.instant.toISOString(), blockingStatus: "busy", optionality: "unknown" });
+  const candidateId = ["update_calendar_event", "move_event"].includes(action.type) ? action.canonicalEventId ?? "proposed" : "proposed";
+  const checked = await conflictsForInterval(userId, { id: candidateId, title: action.title ?? "Proposed event", startAt: start.instant.toISOString(), endAt: end.instant.toISOString(), blockingStatus: "busy", optionality: "unknown" });
   if (!checked.conflicts.length) return { conflicts: [], suggestedAction: undefined };
   const latestEnd = Math.max(...checked.conflicts.map((item) => new Date(item.eventBEnd).getTime()));
   const duration = Math.max(15, Math.round((end.instant.getTime() - start.instant.getTime()) / 60_000));
@@ -48,7 +50,7 @@ async function conflictCheck(userId: string, action: AssistantAction, timeZone: 
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const alternateEnd = new Date(alternateStart.getTime() + duration * 60_000);
     if (alternateEnd.getTime() - start.instant.getTime() > 24 * 60 * 60_000) break;
-    const alternate = await conflictsForInterval(userId, { id: action.canonicalEventId ?? "proposed", title: action.title ?? "Proposed event", startAt: alternateStart.toISOString(), endAt: alternateEnd.toISOString(), blockingStatus: "busy", optionality: "unknown" });
+    const alternate = await conflictsForInterval(userId, { id: candidateId, title: action.title ?? "Proposed event", startAt: alternateStart.toISOString(), endAt: alternateEnd.toISOString(), blockingStatus: "busy", optionality: "unknown" });
     if (!alternate.conflicts.length) { suggestedAction = { ...action, start: alternateStart.toISOString(), end: alternateEnd.toISOString() }; break; }
     alternateStart = new Date(Math.max(...alternate.conflicts.map((item) => new Date(item.eventBEnd).getTime())) + 15 * 60_000);
   }

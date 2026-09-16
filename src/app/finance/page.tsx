@@ -159,12 +159,17 @@ export default function FinancePage() {
 
       {error ? <div className="finance-error"><AlertCircle size={18} /><span>{error}</span></div> : null}
 
-      {!dashboard?.configured ? (
+      {!dashboard ? (
+        <section className="finance-empty" role="status" aria-live="polite">
+          <WalletCards size={28} />
+          <h2>{error ? "Finance unavailable" : "Loading finances…"}</h2>
+        </section>
+      ) : !dashboard.configured ? (
         <section className="finance-empty">
           <WalletCards size={28} />
           <h2>Plaid needs configuration</h2>
           <p>Add the server-only variables listed in <code>.env.example</code>, then restart ASS.</p>
-          <small>Missing: {dashboard?.missing?.join(", ") || "Loading…"}</small>
+          <small>Missing: {dashboard.missing?.join(", ")}</small>
         </section>
       ) : !dashboard.connected ? (
         <section className="finance-empty">
