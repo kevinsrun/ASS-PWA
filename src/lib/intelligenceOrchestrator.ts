@@ -40,7 +40,18 @@ export async function runIntelligenceSync(triggerKind: "cron" | "manual" = "cron
   const slot = triggerKind === "cron" ? new Date().toISOString().slice(0, 13) : null;
   const { data: acquired, error: lockError } = await supabase.rpc("acquire_intelligence_lock", { p_run_id: runId, p_slot: slot });
   if (lockError) throw lockError;
-  if (!acquired) return { runId, status: "skipped" as const, skipped: true, reason: "already_running_or_processed" };
+  if (!acquired) {
+    const { data: lease, error: leaseError } = await supabase.from("sync_locks").select("expires_at").eq("job_name", "intelligence_sync").maybeSingle();
+    if (leaseError) throw leaseError;
+    const reason = lease?.expires_at && Date.parse(lease.expires_at) > Date.now() ? "already_running" : "already_processed";
+    let users = supabase.from("google_tokens").select("user_id");
+    if (options.userId) users = users.eq("user_id", options.userId);
+    const { data: usersData, error: usersError } = await users;
+    if (usersError) throw usersError;
+    const { error: skippedError } = await supabase.from("intelligence_sync_runs").insert({ id: runId, status: "skipped", trigger_kind: triggerKind, skip_reason: reason, user_ids: [...new Set((usersData ?? []).map((user) => user.user_id))], completed_at: new Date().toISOString(), details: { triggerSource: options.triggerSource ?? triggerKind, slot } });
+    if (skippedError) throw skippedError;
+    return { runId, status: "skipped" as const, skipped: true, reason };
+  }
   let retryable = true;
   const metrics: IntelligenceRunMetrics = { accountsScanned: 0, emailsScanned: 0, calendarEventsScanned: 0, driveFilesScanned: 0, actionItemsCreated: 0, draftsCreated: 0, calendarEventsCreated: 0, financeItems: 0, errors: [] };
   try {

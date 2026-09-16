@@ -105,7 +105,7 @@ export async function createTask(userId: string, input: {
     recurrence: "none",
     subtasks: [],
     updated_at: new Date().toISOString(),
-  }, { onConflict: "user_id,local_id" });
+  }, { onConflict: "user_id,local_id", ignoreDuplicates: true });
   if (error) throw new Error(`Task registration failed: ${error.message}`);
   console.info(JSON.stringify({ service: "object-creation", stage: "task-created", sourceKind: input.sourceKind, sourceId: input.sourceId, localId }));
   return { localId };
