@@ -57,3 +57,28 @@ assert.equal(results.filter(result => result.skipped).length, 1);
 assert.equal(results.find(result => !result.skipped).status, 'partial', 'Gmail failure remains visible without preventing Calendar');
 assert.equal(releases, 1, 'Lease released on partial run');
 console.log('Background schedule, DST, authorization, orchestrator concurrency and service isolation passed.');
+let committed = 0;
+let destination = { id: 'event', deleted_at: '2026-09-16T00:00:00Z' };
+let extraction = { id: 'item', title: 'Lecture', normalized_type: 'calendar_event', review_status: 'committed', linked_entity_type: 'canonical_event', linked_entity_id: 'event' };
+class ReconciliationQuery extends Query {
+  is() { return this; }
+  then(resolve) {
+    let data = this.table === 'extraction_items' ? [extraction] : this.table === 'canonical_events' ? destination : [];
+    return Promise.resolve({ data, error: null, count: 0 }).then(resolve);
+  }
+}
+overrides['@/lib/supabaseServer'] = { getServiceSupabaseClient: () => ({ from: table => new ReconciliationQuery(table) }) };
+overrides['@/lib/fileIntelligence'] = { commitExtractionItem: async () => { committed++; } };
+delete overrides['@/lib/extractionReconciliation'];
+const { reconcileExtractedItems } = load('@/lib/extractionReconciliation');
+await reconcileExtractedItems('user', 'cron');
+assert.equal(committed, 0, 'An intentionally deleted canonical event must not be recreated');
+destination = { id: 'event', hidden_from_calendar: true };
+await reconcileExtractedItems('user', 'cron');
+assert.equal(committed, 0, 'A hidden event must not be recreated');
+destination = null;
+assert.equal((await reconcileExtractedItems('user', 'cron')).repaired, 1, 'Missing committed destination must be repaired');
+extraction = { ...extraction, review_status: 'pending' };
+await reconcileExtractedItems('user', 'cron');
+assert.equal(committed, 1, 'Cron must not automatically approve an optional pending extraction');
+console.log('Actual reconciliation regressions passed: missing destination repair, tombstones and approval boundaries.');
