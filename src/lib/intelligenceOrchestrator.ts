@@ -113,7 +113,7 @@ export async function runIntelligenceSync(triggerKind: "cron" | "manual" = "cron
       const userAccounts = (connections ?? []).filter((connection) => String(connection.user_id) === userId).map((connection) => String(connection.id).slice(0, 8));
       for (const message of metrics.errors.filter((message) => userAccounts.some((id) => message.includes(id)))) {
         try {
-          await createAssistantAction(userId, { sourceKind: "integration", sourceId: message.replace(/HTTP \d+.*/s, "").slice(0, 100), actionType: "connection_attention", title: "A connected account needs attention", summary: message, priority: "high", payload: { recommendedAction: /permission|scope|refresh|revoked|expired/i.test(message) ? "Reconnect the affected account in Profile" : "Review Automation integration errors" } });
+          await createAssistantAction(userId, { sourceKind: "integration", sourceId: message.replace(/HTTP \d+[\s\S]*/, "").slice(0, 100), actionType: "connection_attention", title: "A connected account needs attention", summary: message, priority: "high", payload: { recommendedAction: /permission|scope|refresh|revoked|expired/i.test(message) ? "Reconnect the affected account in Profile" : "Review Automation integration errors" } });
         } catch (error) { console.error(JSON.stringify({ service: "intelligence-sync", runId, stage: "connection-alert-failed", message: error instanceof Error ? error.message : "Unknown error" })); }
       }
     }
