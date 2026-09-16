@@ -68,6 +68,7 @@ zones. Background jobs never send email, transact money or move fixed commitment
 
 ```bash
 node scripts/verify-background-automation.mjs
+node scripts/verify-gmail-incremental.mjs
 node scripts/verify-assistant-overlaps.mjs
 npm run verify:intelligence
 npm run verify:syllabus-calendar
@@ -79,3 +80,8 @@ npx tsc --noEmit
 Check persisted run outcomes as well as workflow results. A successful HTTP trigger does
 not prove every account has valid OAuth permissions. Cron-job.org is documented as an
 alternative, not silently provisioned or enabled alongside GitHub.
+
+Gmail catch-up processes at most 25 messages per account per run. Until all pending
+messages are persisted, the previous history cursor is retained. Source messages that
+Google reports deleted/unavailable receive ignored tombstones so they cannot repeatedly
+block the catch-up batch. Large database lookups are chunked to avoid oversized URLs.

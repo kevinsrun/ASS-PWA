@@ -41,7 +41,7 @@ function load(name) {
   if (overrides[name]) return overrides[name];
   if (!name.startsWith('@/')) return require(name);
   const module = { exports: {} };
-  const code = ts.transpileModule(fs.readFileSync(path.resolve('src', name.slice(2) + '.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const code = ts.transpileModule(fs.readFileSync(path.resolve('src', name.slice(2) + '.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
   new Function('require', 'module', 'exports', code)(load, module, module.exports);
   return module.exports;
 }

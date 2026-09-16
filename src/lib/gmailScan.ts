@@ -258,12 +258,32 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
       const { data: unfinished, error: unfinishedError } = await supabase.from("email_messages").select("google_message_id,email_extractions!inner(status)").eq("user_id", userId).eq("google_account_id", accountId).in("email_extractions.status", ["classified", "failed"]).limit(10);
       if (unfinishedError) throw unfinishedError;
       const ids = [...new Set([...incremental.ids, ...(unfinished ?? []).map((message) => String(message.google_message_id))])];
-      const { data: existing } = ids.length
-        ? await supabase.from("email_suggestions").select("external_id,status").eq("user_id", userId).eq("google_account_id", accountId).in("external_id", ids)
-        : { data: [] };
+      const existing: Array<{ external_id: string; status: string }> = [];
+      const removedIds = new Set<string>();
+      for (let index = 0; index < ids.length; index += 200) {
+        const batch = ids.slice(index, index + 200);
+        const [suggestions, removed] = await Promise.all([
+          supabase.from("email_suggestions").select("external_id,status").eq("user_id", userId).eq("google_account_id", accountId).in("external_id", batch),
+          supabase.from("email_messages").select("google_message_id,email_extractions!inner(status)").eq("user_id", userId).eq("google_account_id", accountId).in("google_message_id", batch).eq("email_extractions.status", "ignored"),
+        ]);
+        if (suggestions.error) throw suggestions.error;
+        if (removed.error) throw removed.error;
+        existing.push(...suggestions.data ?? []);
+        for (const row of removed.data ?? []) removedIds.add(String(row.google_message_id));
+      }
       const unfinishedIds = new Set((unfinished ?? []).map((message) => String(message.google_message_id)));
-      const seen = new Set((existing ?? []).filter((row) => row.status !== "pending" || !unfinishedIds.has(String(row.external_id))).map((row) => String(row.external_id)));
-      const messages = await fetchMessages(ids.filter((id) => !seen.has(id)), accessToken);
+      const seen = new Set([...removedIds, ...existing.filter((row) => row.status !== "pending" || !unfinishedIds.has(String(row.external_id))).map((row) => String(row.external_id))]);
+      const pendingIds = ids.filter((id) => !seen.has(id));
+      const batchIds = pendingIds.slice(0, 25);
+      const messages = await fetchMessages(batchIds, accessToken);
+      const fetchedIds = new Set(messages.map((message) => message.id));
+      const missingIds = batchIds.filter((id) => !fetchedIds.has(id));
+      if (missingIds.length) {
+        const { data: removedMessages, error: removedError } = await supabase.from("email_messages").upsert(missingIds.map((id) => ({ user_id: userId, google_account_id: accountId, google_message_id: id })), { onConflict: "user_id,google_account_id,google_message_id" }).select("id");
+        if (removedError) throw removedError;
+        const { error: removedExtractionError } = await supabase.from("email_extractions").upsert((removedMessages ?? []).map((message) => ({ user_id: userId, email_message_id: message.id, predicted_label: "no_action", confidence: 0, status: "ignored", error_message: "Source message no longer available in Gmail" })), { onConflict: "email_message_id" });
+        if (removedExtractionError) throw removedExtractionError;
+      }
       emailsScanned += messages.length;
       const classifications = await classify(messages, context.prompt);
       const byId = new Map(classifications.map((item) => [item.id, item]));
@@ -379,9 +399,11 @@ export async function scanRecentGmailSuggestions(userId: string, onlyAccountId?:
         const { error: registeredError } = await supabase.from("email_extractions").update({ status: "created", updated_at: processedAt }).eq("user_id", userId).in("email_message_id", [...messageIdByExternalId.values()]).neq("status", "ignored");
         if (registeredError) throw registeredError;
       }
-      const { error: stateError } = await supabase.from("google_tokens").update({ gmail_history_id: incremental.newestHistoryId, last_email_sync_at: processedAt, email_sync_status: "synced", email_sync_error: null, updated_at: processedAt }).eq("id", accountId).eq("user_id", userId);
+      const backlogRemaining = pendingIds.length > batchIds.length;
+      const cursor = backlogRemaining ? account.gmail_history_id ?? null : incremental.newestHistoryId;
+      const { error: stateError } = await supabase.from("google_tokens").update({ gmail_history_id: cursor, last_email_sync_at: processedAt, email_sync_status: "synced", email_sync_error: null, updated_at: processedAt }).eq("id", accountId).eq("user_id", userId);
       if (stateError) throw stateError;
-      console.info(JSON.stringify({ service: "gmail-intelligence", runId, account: accountId.slice(0, 8), processed: rows.length, incremental: !incremental.fallback, historyIdAdvanced: Boolean(incremental.newestHistoryId) }));
+      console.info(JSON.stringify({ service: "gmail-intelligence", runId, account: accountId.slice(0, 8), processed: rows.length, sourceMessagesRemoved: missingIds.length, backlogRemaining, incremental: !incremental.fallback, historyIdAdvanced: !backlogRemaining && Boolean(cursor) }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown Gmail failure";
       failures.push(`${accountId.slice(0, 8)}: ${message}`);
