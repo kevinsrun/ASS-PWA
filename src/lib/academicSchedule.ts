@@ -89,7 +89,7 @@ export function deriveAcademicSchedule(input: {
 
 export function recurrenceMatchesDate(rule: string, date: Date) {
   const byDay = rule.toUpperCase().match(/BYDAY=([^;]+)/)?.[1]?.split(",") ?? [];
-  const code = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][date.getDay()];
+  const code = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][date.getUTCDay()];
   const until = rule.toUpperCase().match(/UNTIL=(\d{8})/)?.[1];
   if (until && date.toISOString().slice(0, 10).replaceAll("-", "") > until) return false;
   return byDay.includes(code);
@@ -98,4 +98,18 @@ export function recurrenceMatchesDate(rule: string, date: Date) {
 export function timeLabelToSql(label: string) {
   const minutes = labelToMinutes(label);
   return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}:00`;
+}
+
+export function calendarLocalIso(date: string, label: string, timeZone: string) {
+  const minutes = labelToMinutes(label);
+  const [year, month, day] = date.split("-").map(Number);
+  const desired = Date.UTC(year, month - 1, day, Math.floor(minutes / 60), minutes % 60);
+  let guess = desired;
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(guess));
+    const get = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+    const represented = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"));
+    guess += desired - represented;
+  }
+  return new Date(guess).toISOString();
 }

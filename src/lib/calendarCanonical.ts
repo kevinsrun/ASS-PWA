@@ -1,6 +1,8 @@
 import { createHash } from "crypto";
 import { labelToMinutes } from "@/lib/dateTime";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
+import { explainOverlap } from "@/lib/conflictEngine";
+import { calendarLocalIso } from "@/lib/academicSchedule";
 
 export type CanonicalGoogleEvent = {
   id: string;
@@ -384,7 +386,7 @@ export async function detectCalendarConflicts(userId: string) {
   const through = new Date(Date.now() + 60 * 86_400_000).toISOString().slice(0, 10);
   const { data, error } = await supabase
     .from("plans")
-    .select("id,local_id,canonical_event_id,title,date,start_label,end_label,all_day,category,priority")
+    .select("id,local_id,canonical_event_id,title,date,start_label,end_label,all_day,category,priority,blocking_status,optionality")
     .eq("user_id", userId)
     .eq("all_day", false)
     .gte("date", today)
@@ -393,13 +395,18 @@ export async function detectCalendarConflicts(userId: string) {
     .order("start_label");
   if (error) throw error;
   let conflicts = 0;
-  const events = data ?? [];
+  const events = (data ?? []).sort((a, b) => String(a.date).localeCompare(String(b.date)) || labelToMinutes(a.start_label) - labelToMinutes(b.start_label));
+  const interval = (event: typeof events[number]) => {
+    const overnight = labelToMinutes(event.end_label) <= labelToMinutes(event.start_label);
+    const endDate = new Date(new Date(`${event.date}T12:00:00Z`).getTime() + (overnight ? 86_400_000 : 0)).toISOString().slice(0, 10);
+    return { id: String(event.canonical_event_id ?? event.local_id ?? event.id), title: event.title, startAt: calendarLocalIso(event.date, event.start_label, "America/New_York"), endAt: calendarLocalIso(endDate, event.end_label, "America/New_York"), allDay: event.all_day, blockingStatus: event.blocking_status === "free" ? "free" as const : "busy" as const, optionality: event.optionality };
+  };
   for (let leftIndex = 0; leftIndex < events.length; leftIndex += 1) {
     const left = events[leftIndex];
     for (let rightIndex = leftIndex + 1; rightIndex < events.length; rightIndex += 1) {
       const right = events[rightIndex];
-      if (String(right.date) !== String(left.date)) break;
-      if (labelToMinutes(String(right.start_label)) >= labelToMinutes(String(left.end_label))) break;
+      if (new Date(interval(right).startAt) >= new Date(interval(left).endAt)) break;
+      if (!explainOverlap(interval(left), interval(right)).isActualConflict) continue;
       const leftKey = String(left.canonical_event_id ?? left.local_id ?? left.id);
       const rightKey = String(right.canonical_event_id ?? right.local_id ?? right.id);
       if (leftKey === rightKey) continue;

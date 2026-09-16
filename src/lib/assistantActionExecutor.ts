@@ -25,6 +25,7 @@ const categoryMap: Record<string, PlanCategory> = { study: "school", school: "sc
 const risky = new Set<AssistantActionType>(["delete_calendar_event", "update_calendar_event", "move_event", "reschedule_task", "create_email_draft"]);
 
 function toParts(value: string, timeZone: string) {
+  if (!/T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) throw new Error("Scheduling requires an ISO date/time with an explicit timezone offset.");
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error(`Invalid date/time: ${value}`);
   return {
@@ -42,11 +43,18 @@ async function conflictCheck(userId: string, action: AssistantAction, timeZone: 
   if (!checked.conflicts.length) return { conflicts: [], suggestedAction: undefined };
   const latestEnd = Math.max(...checked.conflicts.map((item) => new Date(item.eventBEnd).getTime()));
   const duration = Math.max(15, Math.round((end.instant.getTime() - start.instant.getTime()) / 60_000));
-  const alternateStart = new Date(latestEnd + 15 * 60_000);
-  const alternateEnd = new Date(alternateStart.getTime() + duration * 60_000);
+  let alternateStart = new Date(latestEnd + 15 * 60_000);
+  let suggestedAction: AssistantAction | undefined;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const alternateEnd = new Date(alternateStart.getTime() + duration * 60_000);
+    if (alternateEnd.getTime() - start.instant.getTime() > 24 * 60 * 60_000) break;
+    const alternate = await conflictsForInterval(userId, { id: action.canonicalEventId ?? "proposed", title: action.title ?? "Proposed event", startAt: alternateStart.toISOString(), endAt: alternateEnd.toISOString(), blockingStatus: "busy", optionality: "unknown" });
+    if (!alternate.conflicts.length) { suggestedAction = { ...action, start: alternateStart.toISOString(), end: alternateEnd.toISOString() }; break; }
+    alternateStart = new Date(Math.max(...alternate.conflicts.map((item) => new Date(item.eventBEnd).getTime())) + 15 * 60_000);
+  }
   return {
     conflicts: checked.conflicts.map((item) => `${item.eventB} (${new Date(item.eventBStart).toLocaleTimeString([], { timeStyle: "short", timeZone })}–${new Date(item.eventBEnd).toLocaleTimeString([], { timeStyle: "short", timeZone })})`),
-    suggestedAction: { ...action, start: alternateStart.toISOString(), end: alternateEnd.toISOString() },
+    suggestedAction,
   };
 }
 
@@ -71,14 +79,14 @@ export async function executeAssistantActions(userId: string, actions: Assistant
         if (!action.title || !action.start || !action.end) throw new Error("Title, start, and end are required.");
         const conflict = await conflictCheck(userId, action, timeZone);
         console.info(JSON.stringify({ service: "assistant-action-executor", stage: "conflict-checked", type: action.type, conflicts: conflict.conflicts }));
-        if (conflict.conflicts.length && !options?.confirmed) {
+        if (conflict.conflicts.length) {
           results.push({ type: action.type, success: false, status: "requires_confirmation", createdObjectId: null, errorMessage: null, summary: `This overlaps ${conflict.conflicts.join(", ")}.`, action, conflicts: conflict.conflicts, suggestedAction: conflict.suggestedAction });
           continue;
         }
         const start = toParts(action.start, timeZone); const end = toParts(action.end, timeZone);
         const supabase = getServiceSupabaseClient()!;
         const { count } = await supabase.from("google_tokens").select("id", { count: "exact", head: true }).eq("user_id", userId);
-        const created = await createCanonicalEvent(userId, { title: action.title, date: start.date, startLabel: start.label, endLabel: end.label, recurrence: "none", category: action.type === "create_study_block" ? "school" : categoryMap[action.category ?? "personal"] ?? "personal", priority: action.priority ?? "medium", notes: action.notes ?? "Created from ASS chat", sourceKind: "assistant", sourceId: action.sourceId!, syncToGoogle: Boolean(count) });
+        const created = await createCanonicalEvent(userId, { title: action.title, date: start.date, startLabel: start.label, endLabel: end.label, timeZone, recurrence: "none", category: action.type === "create_study_block" ? "school" : categoryMap[action.category ?? "personal"] ?? "personal", priority: action.priority ?? "medium", notes: action.notes ?? "Created from ASS chat", sourceKind: "assistant", sourceId: action.sourceId!, syncToGoogle: Boolean(count) });
         results.push({ type: action.type, success: true, status: "completed", createdObjectId: created.canonicalEventId, errorMessage: created.googleError, summary: `${action.title} was added to the calendar${created.googleSynced ? " and synced to Google" : ""}.`, action });
       } else if (action.type === "create_task") {
         if (!action.title) throw new Error("Task title is required.");
@@ -96,6 +104,11 @@ export async function executeAssistantActions(userId: string, actions: Assistant
         const supabase = getServiceSupabaseClient()!;
         const { data: current, error } = await supabase.from("plans").select("*").eq("user_id", userId).eq("canonical_event_id", action.canonicalEventId).single();
         if (error || !current) throw error ?? new Error("Calendar event not found.");
+        const conflict = await conflictCheck(userId, { ...action, title: action.title ?? String(current.title) }, timeZone);
+        if (conflict.conflicts.length) {
+          results.push({ type: action.type, success: false, status: "requires_confirmation", createdObjectId: null, errorMessage: null, summary: `This overlaps ${conflict.conflicts.join(", ")}.`, action, conflicts: conflict.conflicts, suggestedAction: conflict.suggestedAction });
+          continue;
+        }
         const start = toParts(action.start, timeZone); const end = toParts(action.end, timeZone);
         const title = action.title?.trim() || String(current.title);
         const { error: planError } = await supabase.from("plans").update({ title, date: start.date, start_label: start.label, end_label: end.label, updated_at: new Date().toISOString() }).eq("user_id", userId).eq("canonical_event_id", action.canonicalEventId);

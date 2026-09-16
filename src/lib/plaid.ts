@@ -24,6 +24,7 @@ export function plaidConfiguration() {
 
 export function getPlaidClient() {
   const environment = process.env.PLAID_ENV?.trim() || "sandbox";
+  if (!["sandbox", "development", "production"].includes(environment)) throw new Error("PLAID_ENV must be sandbox, development, or production");
   const basePath = environment === "production"
     ? PlaidEnvironments.production
     : environment === "development"
@@ -41,6 +42,8 @@ export function getPlaidClient() {
 }
 
 export async function createPlaidLinkToken(userId: string) {
+  const configuration = plaidConfiguration();
+  if (!configuration.ready) throw new Error(`Finance setup is incomplete: ${configuration.missing.join(", ")}`);
   const redirectUri = process.env.PLAID_REDIRECT_URI?.trim();
   const response = await getPlaidClient().linkTokenCreate({
     client_name: "ASS",
@@ -53,6 +56,15 @@ export async function createPlaidLinkToken(userId: string) {
     ...(redirectUri ? { redirect_uri: redirectUri } : {}),
   });
   return { linkToken: response.data.link_token, expiration: response.data.expiration };
+}
+
+export function plaidFailure(error: unknown) {
+  const data = (error as { response?: { data?: { error_code?: string; error_message?: string; request_id?: string } } } | null)?.response?.data;
+  return {
+    code: data?.error_code ?? null,
+    requestId: data?.request_id ?? null,
+    message: data?.error_message ?? (error instanceof Error ? error.message : "Unable to start Plaid Link"),
+  };
 }
 
 export async function exchangePlaidPublicToken(

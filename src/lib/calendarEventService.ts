@@ -3,6 +3,7 @@ import { canonicalEventFingerprint, canonicalPlanLocalId, detectCalendarConflict
 import { createGoogleCalendarEvent } from "@/lib/googleCalendarSync";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import type { PlanCategory, PlanPriority, PlanRecurrence, SavedPlan } from "@/lib/types";
+import { calendarLocalIso as localIso } from "@/lib/academicSchedule";
 
 export type CalendarEventSource = "manual" | "file" | "text" | "gmail" | "drive" | "task" | "habit" | "project" | "assistant";
 
@@ -57,20 +58,6 @@ function labelFromMinutes(minutes: number) {
 
 function normalizedLabel(value: string) {
   return /\b(?:AM|PM)\b/i.test(value) ? labelFromMinutes(labelToMinutes(value)) : formatTimeLabel(value);
-}
-
-function localIso(date: string, label: string, timeZone: string) {
-  const minutes = labelToMinutes(label);
-  const [year, month, day] = date.split("-").map(Number);
-  const desired = Date.UTC(year, month - 1, day, Math.floor(minutes / 60), minutes % 60);
-  let guess = desired;
-  for (let iteration = 0; iteration < 2; iteration += 1) {
-    const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(guess));
-    const get = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value ?? 0);
-    const represented = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"));
-    guess += desired - represented;
-  }
-  return new Date(guess).toISOString();
 }
 
 function normalize(input: CalendarEventInput) {

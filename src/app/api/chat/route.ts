@@ -21,7 +21,7 @@ function readModelResponse(raw: string) {
 
 function resultReply(results: AssistantActionResult[]) {
   const parts = results.filter((result) => result.success).map((result) => result.summary);
-  for (const result of results.filter((item) => item.status === "requires_confirmation")) parts.push(result.conflicts?.length ? `${result.summary} I found an alternate time; confirm the action card if you want me to use it.` : `${result.summary} Please confirm the action card.`);
+  for (const result of results.filter((item) => item.status === "requires_confirmation")) parts.push(result.conflicts?.length ? `${result.summary} ${result.suggestedAction ? "I found an alternate time; confirm the action card if you want me to use it." : "I could not find a free interval within the next 24 hours. Please choose another time."}` : `${result.summary} Please confirm the action card.`);
   for (const result of results.filter((item) => item.status === "failed")) parts.push(`I understood the request, but ${result.summary.toLowerCase()}`);
   return parts.join("\n\n") || "I understood, but no executable action was produced.";
 }
@@ -58,7 +58,7 @@ For ordinary conversation, actions is empty. For scheduling/action intent, provi
 Every explicit request using schedule, add to calendar, block time, create a task, remind me, or add a deadline MUST emit the corresponding action. Do this even if the requested time appears to conflict; never resolve conflicts in prose because the executor is authoritative and will return alternatives.
 Allowed action types: ${assistantActionTypes.join(", ")}.
 Action fields: type, title, start, end, dueAt, category, priority, notes, canonicalEventId, localId, taskLocalId, deleteFromGoogle, decision, emailSuggestionId, googleAccountId, subject, body.
-Dates must be unambiguous ISO-8601. Resolve today/tomorrow relative to Current time. Study requests use create_study_block. Reminders without a scheduled time use create_task. Due dates use create_deadline.
+Dates must be unambiguous ISO-8601 with an explicit timezone offset or Z. Resolve today/tomorrow relative to Current time in the user's timezone. Study requests use create_study_block. Reminders without a scheduled time use create_task. Due dates use create_deadline.
 Never invent an existing object ID. If an update/delete target cannot be identified exactly from the supplied calendar, ask one concise question and emit no action.
 Do not move classes, labs, exams, work, interviews, or required meetings unless explicitly requested. Never claim completion; execution writes the final reply.
 Calendar: ${JSON.stringify(plans.data ?? [])}

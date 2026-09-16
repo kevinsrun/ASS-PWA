@@ -43,7 +43,7 @@ import { buildLearningProfile } from "@/lib/learning";
 import { useAppContext } from "@/providers/AppProvider";
 import { useAuth } from "@/providers/AuthProvider";
 import { useCalendarSync } from "@/hooks/useCalendarSync";
-import { recurrenceMatchesDate } from "@/lib/academicSchedule";
+import { isPlanVisibleOnDate } from "@/lib/calendarRecurrence";
 import CalendarSyncIndicator from "@/components/CalendarSyncIndicator";
 
 type OptimizerSuggestion = {
@@ -161,54 +161,6 @@ function planRange(plan: Pick<SavedPlan, "startLabel" | "endLabel">) {
 
 function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number) {
   return aStart < bEnd && bStart < aEnd;
-}
-
-function isPlanVisibleOnDate(plan: SavedPlan, dateKey: string) {
-  const date = new Date(`${dateKey}T00:00:00`);
-  const planDate = new Date(`${plan.date}T00:00:00`);
-  const custom = (plan.customRecurrence ?? "").toLowerCase();
-
-  if (plan.excludedDates?.includes(dateKey)) return false;
-  if (plan.date === dateKey) return true;
-  if (plan.date > dateKey) return false;
-  if (plan.recurrence === "daily") return true;
-  if (plan.recurrence === "weekdays") return date.getDay() > 0 && date.getDay() < 6;
-  if (plan.recurrence === "weekends") return date.getDay() === 0 || date.getDay() === 6;
-  if (plan.recurrence === "weekly") return planDate.getDay() === date.getDay();
-  if (plan.recurrence === "custom") {
-    if (/RRULE:/i.test(custom) && recurrenceMatchesDate(custom, date)) return true;
-    const daysSinceStart = Math.floor(
-      (date.getTime() - planDate.getTime()) / 86_400_000
-    );
-    const dayNames = [
-      "sunday",
-      "monday",
-      "tuesday",
-      "wednesday",
-      "thursday",
-      "friday",
-      "saturday",
-    ];
-    const selectedDays = dayNames
-      .map((dayName, index) => ({ dayName, index }))
-      .filter(({ dayName }) => custom.includes(dayName));
-    const intervalMatch = custom.match(/every\s+(\d+)\s+days?/);
-
-    if (custom.includes("every other day") || custom.includes("every 2 days")) {
-      return daysSinceStart % 2 === 0;
-    }
-
-    if (intervalMatch) {
-      const interval = Number(intervalMatch[1]);
-      return interval > 0 && daysSinceStart % interval === 0;
-    }
-
-    if (selectedDays.length > 0) {
-      return selectedDays.some(({ index }) => index === date.getDay());
-    }
-  }
-
-  return false;
 }
 
 function getVisiblePlans(plans: SavedPlan[], dateKey: string) {
