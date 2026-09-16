@@ -1,16 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { intelligenceScheduleDecision } from "@/lib/intelligenceSchedule";
 import { ApiAuthError, requireApiUser } from "@/lib/serverAuth";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 
 function nextExpectedRun() {
   const candidate = new Date();
-  candidate.setUTCMinutes(0, 0, 0);
-  for (let hours = 1; hours <= 48; hours += 1) {
-    candidate.setUTCHours(candidate.getUTCHours() + 1);
-    if (intelligenceScheduleDecision(candidate).shouldRun) return candidate.toISOString();
-  }
-  return null;
+  candidate.setUTCHours(13, 0, 0, 0);
+  if (candidate.getTime() <= Date.now()) candidate.setUTCDate(candidate.getUTCDate() + 1);
+  return candidate.toISOString();
 }
 
 export async function GET(request: NextRequest) {

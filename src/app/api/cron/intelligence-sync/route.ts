@@ -10,7 +10,7 @@ export const maxDuration = 300;
 export async function GET(request: NextRequest) {
   const unauthorized = verifyCronRequest(request);
   if (unauthorized) return unauthorized;
-  const schedule = intelligenceScheduleDecision();
+  const schedule = intelligenceScheduleDecision(new Date(), "daily");
   const developmentForce = process.env.NODE_ENV !== "production" && request.nextUrl.searchParams.get("force") === "1";
   console.info(JSON.stringify({ service: "intelligence-sync", stage: "cron-triggered", ...schedule }));
   if (!schedule.shouldRun && !developmentForce) {
