@@ -196,8 +196,10 @@ export async function createEmailDraft(userId: string, input: {
   context?: Record<string, unknown>;
 }) {
   const supabase = client();
-  const { data: existing, error: existingError } = input.emailSuggestionId ? await supabase.from("email_drafts").select("id").eq("user_id",userId).eq("email_suggestion_id", input.emailSuggestionId).maybeSingle() : {data:null,error:null};
+  const { data: existing, error: existingError } = input.emailSuggestionId ? await supabase.from("email_drafts").select("id,status").eq("user_id",userId).eq("email_suggestion_id", input.emailSuggestionId).maybeSingle() : {data:null,error:null};
   if (existingError) throw new Error(`Email draft lookup failed: ${existingError.message}`);
+  // Retries/reanalysis must never replace a generated or user-reviewed draft.
+  if (existing) return { id: String(existing.id), created: false };
   const { data, error } = await supabase.from("email_drafts").upsert({
     user_id: userId,
     google_account_id: input.googleAccountId,

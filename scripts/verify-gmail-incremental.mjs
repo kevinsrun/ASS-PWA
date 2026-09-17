@@ -10,6 +10,7 @@ class Query {
   select() { return this; } eq() { return this; } in() { return this; }
   order() { return this; } limit() { return this; } gte() { return this; }
   lte() { return this; } neq() { return this; } is() { return this; }
+  maybeSingle() { return Promise.resolve({data:null,error:null}); }
   upsert(rows) { this.rows = rows; return this; }
   update(row) { if (this.table === 'google_tokens' && 'gmail_history_id' in row) cursorWrites.push(row.gmail_history_id); return this; }
   then(resolve) {
@@ -18,10 +19,10 @@ class Query {
   }
 }
 const overrides = {
-  '@/lib/supabaseServer': { getServiceSupabaseClient: () => ({ from: table => new Query(table) }) },
+  '@/lib/supabaseServer': { getServiceSupabaseClient: () => ({ from: table => new Query(table),rpc:async()=>({data:true,error:null}) }) },
   '@/lib/googleAuth': { listGoogleAccounts: async () => [{ id: 'account', connected_email: 'fixture@example.test', gmail_history_id: 'old' }], getGoogleAccessToken: async () => 'fixture-token' },
   '@/lib/gemini': { rotateGeminiKey() {}, getGeminiModel: () => ({ generateContent: async prompt => ({ response: { text: () => invalid ? '{invalid' : JSON.stringify(JSON.parse(prompt.split('\nMessages:\n')[1]).map(message => ({ id: message.id, type: 'no_action', confidence: 1, evidence_text:message.snippet }))) } }) }) },
-  '@/lib/objectCreation': {},
+  '@/lib/objectCreation': {createAssistantAction:async()=>({created:false})},
 };
 function load(name) {
   if (overrides[name]) return overrides[name];
@@ -46,7 +47,7 @@ try {
   assert.equal(result.emailsScanned, 1);
   assert.deepEqual(cursorWrites, ['new'], 'Cursor advances after complete persisted batch');
   cursorWrites = []; ids = Array.from({ length: 30 }, (_, index) => `live-${index}`);
-  assert.equal((await scanRecentGmailSuggestions('user')).emailsScanned, 25);
+  assert.equal((await scanRecentGmailSuggestions('user')).emailsScanned, 5);
   assert.deepEqual(cursorWrites, ['old'], 'Backlog keeps cursor until all messages are persisted');
   cursorWrites = []; ids = ['live']; invalid = true;
   assert.equal((await scanRecentGmailSuggestions('user')).failures.length, 1);

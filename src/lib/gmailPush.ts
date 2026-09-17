@@ -1,0 +1,111 @@
+import { createRemoteJWKSet, jwtVerify } from "jose";
+import { getServiceSupabaseClient } from "@/lib/supabaseServer";
+import { getGoogleAccessToken } from "@/lib/googleAuth";
+import { scanRecentGmailSuggestions } from "@/lib/gmailScan";
+import { createAssistantAction } from "@/lib/objectCreation";
+
+const googleKeys = createRemoteJWKSet(new URL("https://www.googleapis.com/oauth2/v3/certs"));
+function database() {
+  const client = getServiceSupabaseClient();
+  if (!client) throw new Error("A Supabase server key is not configured");
+  return client;
+}
+export function gmailPushConfiguration() {
+  const topic = process.env.GMAIL_PUBSUB_TOPIC?.trim();
+  const audience = process.env.GMAIL_PUSH_AUDIENCE?.trim();
+  const email = process.env.GMAIL_PUSH_SERVICE_ACCOUNT?.trim();
+  const subscription = process.env.GMAIL_PUBSUB_SUBSCRIPTION?.trim();
+  return { topic, audience, email, subscription, ready: Boolean(topic && /^projects\/[^/]+\/topics\/[^/]+$/.test(topic) && audience?.startsWith("https://") && email?.endsWith(".gserviceaccount.com") && subscription && /^projects\/[^/]+\/subscriptions\/[^/]+$/.test(subscription)) };
+}
+export async function validateGmailPush(authorization: string | null, keys: Parameters<typeof jwtVerify>[1] = googleKeys) {
+  const config = gmailPushConfiguration();
+  if (!config.ready) throw new Error("Gmail push is not configured: topic, subscription, audience and service-account identity are required");
+  const token = authorization?.match(/^Bearer ([^\s]+)$/)?.[1];
+  if (!token) throw new Error("Missing Pub/Sub identity token");
+  const { payload } = await jwtVerify(token, keys, { issuer: ["https://accounts.google.com", "accounts.google.com"], audience: config.audience, algorithms: ["RS256"], requiredClaims: ["exp", "iat", "sub"] });
+  if (payload.email !== config.email || payload.email_verified !== true) throw new Error("Unexpected Pub/Sub service-account identity");
+}
+export function decodeGmailPush(body: unknown) {
+  const config = gmailPushConfiguration();
+  const envelope = body as { subscription?: string; message?: { data?: string; messageId?: string } };
+  if (!envelope || envelope.subscription !== config.subscription || typeof envelope.message?.messageId !== "string" || envelope.message.messageId.length > 200 || typeof envelope.message.data !== "string" || envelope.message.data.length > 10_000 || !/^[A-Za-z0-9_+/=-]+$/.test(envelope.message.data)) throw new Error("Invalid Pub/Sub envelope");
+  const decoded = JSON.parse(Buffer.from(envelope.message.data, "base64url").toString("utf8")) as { emailAddress?: unknown; historyId?: unknown };
+  if (typeof decoded.emailAddress !== "string" || decoded.emailAddress.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(decoded.emailAddress) || typeof decoded.historyId !== "string" || !/^\d{1,30}$/.test(decoded.historyId) || BigInt(decoded.historyId) <= BigInt(0)) throw new Error("Invalid Gmail notification");
+  return { email: decoded.emailAddress, historyId: decoded.historyId, notificationId: envelope.message.messageId };
+}
+export async function persistGmailPush(notification: ReturnType<typeof decodeGmailPush>) {
+  const { data, error } = await database().rpc("enqueue_gmail_push", { p_email: notification.email, p_history_id: notification.historyId, p_notification_id: notification.notificationId });
+  if (error) throw error; // Never acknowledge a notification that wasn't durably saved.
+  return Number(data);
+}
+export async function renewGmailWatches(onlyUserId?: string, onlyAccountId?: string) {
+  const config = gmailPushConfiguration();
+  if (!config.ready) return { configured: false, renewed: 0, errors: [] as string[] };
+  const db = database();
+  let query = db.from("google_tokens").select("id,user_id,connected_email").is("disconnected_at", null);
+  if (onlyUserId) query = query.eq("user_id", onlyUserId);
+  if (onlyAccountId) query = query.eq("id", onlyAccountId);
+  const { data: accounts, error } = await query;
+  if (error) throw error;
+  let renewed = 0;
+  const errors: string[] = [];
+  for (const account of accounts ?? []) {
+    const { data: state, error: readError } = await db.from("gmail_watch_state").select("watch_expiration,last_watch_renewal").eq("user_id", account.user_id).eq("google_account_id", account.id).maybeSingle();
+    if (readError) throw readError;
+    if (state?.watch_expiration && Date.parse(state.watch_expiration) > Date.now() + 48 * 3600_000 && state.last_watch_renewal && Date.parse(state.last_watch_renewal) > Date.now() - 24 * 3600_000) continue;
+    try {
+      const token = await getGoogleAccessToken(account.user_id, account.id);
+      const response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/watch", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ topicName: config.topic }), signal: AbortSignal.timeout(20_000), cache: "no-store" });
+      const result = await response.json() as { historyId?: string; expiration?: string; error?: { message?: string } };
+      if (!response.ok || !result.historyId || !result.expiration) throw new Error(result.error?.message ?? `Gmail watch returned HTTP ${response.status}`);
+      const { error: saveError } = await db.from("gmail_watch_state").upsert({ user_id: account.user_id, google_account_id: account.id, watch_expiration: new Date(Number(result.expiration)).toISOString(), watch_history_id: result.historyId, last_watch_renewal: new Date().toISOString(), last_error: null }, { onConflict: "google_account_id" });
+      if (saveError) throw saveError;
+      // Renewal does NOT replace the processed cursor: pending changes would be lost.
+      renewed++;
+    } catch (failure) {
+      const message = failure instanceof Error ? failure.message : "Gmail watch renewal failed";
+      errors.push(`${String(account.id).slice(0, 8)}: ${message}`);
+      const { error: saveError } = await db.from("gmail_watch_state").upsert({ user_id: account.user_id, google_account_id: account.id, last_error: message }, { onConflict: "google_account_id" });
+      if (saveError) throw saveError;
+      await createAssistantAction(account.user_id, { sourceKind: "integration", sourceId: `gmail-watch:${account.id}`, actionType: "connection_attention", title: "Gmail push needs attention", summary: `${account.connected_email}: ${message}`, priority: "high", payload: { googleAccountId: account.id, recommendedAction: /401|403|revoked|refresh|scope|invalid_grant/i.test(message) ? "Reconnect Gmail in Profile; check Google Pub/Sub permissions if authorization is healthy" : "Check the Gmail push configuration" } });
+    }
+  }
+  return { configured: true, renewed, errors };
+}
+export async function processGmailPushQueue(maxAccounts = 2, budgetMs=150_000) {
+  const db = database();
+  const { data: pending, error } = await db.from("gmail_processing_queue").select("id,user_id,google_account_id,attempts").eq("status", "pending").lte("next_attempt_at", new Date().toISOString()).order("created_at").limit(100);
+  if (error) throw error;
+  const distinct = [...new Map((pending ?? []).map(row => [row.google_account_id, row])).values()].slice(0, maxAccounts);
+  const results = [];
+  const started=Date.now();
+  for (const event of distinct) {
+    let result = await scanRecentGmailSuggestions(event.user_id, event.google_account_id,undefined,2);
+    // Bursts continue draining after the original push response. A bounded
+    // budget leaves crash/timeout/backlog recovery to the durable queue + cron.
+    for(let pass=0;pass<20 && result.connected && !result.busy && !result.failures.length && Date.now()-started<budgetMs;pass++) {
+      const completed=await db.rpc("complete_gmail_pushes",{p_user_id:event.user_id,p_account_id:event.google_account_id});
+      if(completed.error) throw completed.error;
+      const remaining=await db.from("gmail_processing_queue").select("id").eq("user_id",event.user_id).eq("google_account_id",event.google_account_id).eq("status","pending").limit(1);
+      if(remaining.error) throw remaining.error;
+      if(!result.backlogRemaining && !remaining.data?.length) break;
+      const next=await scanRecentGmailSuggestions(event.user_id,event.google_account_id,undefined,2);
+      result={...next,suggestions:[...result.suggestions,...next.suggestions],emailsScanned:result.emailsScanned+next.emailsScanned,actionItemsCreated:result.actionItemsCreated+next.actionItemsCreated,draftsCreated:result.draftsCreated+next.draftsCreated,calendarEventsCreated:result.calendarEventsCreated+next.calendarEventsCreated};
+    }
+    results.push(result);
+    if (result.busy) continue;
+    if(!result.connected) {
+      const {error:cancelError}=await db.from("gmail_processing_queue").update({status:"completed",completed_at:new Date().toISOString(),last_error:"Connection removed; notification canceled without processing"}).eq("user_id",event.user_id).eq("google_account_id",event.google_account_id).eq("status","pending");
+      if(cancelError) throw cancelError;
+      continue;
+    }
+    if (!result.failures.length) {
+      const { error: completionError } = await db.rpc("complete_gmail_pushes", { p_user_id: event.user_id, p_account_id: event.google_account_id });
+      if (completionError) throw completionError;
+    }
+    const delay = result.failures.length ? Math.min(3600, 30 * 2 ** Math.min(event.attempts, 7)) : 5;
+    const { error: retryError } = await db.from("gmail_processing_queue").update({ attempts: event.attempts + 1, last_error: result.failures.join("; ") || null, next_attempt_at: new Date(Date.now() + delay * 1000).toISOString() }).eq("user_id", event.user_id).eq("google_account_id", event.google_account_id).eq("status", "pending");
+    if (retryError) throw retryError;
+  }
+  return results;
+}

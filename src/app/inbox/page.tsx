@@ -50,7 +50,7 @@ type ImportedText = {
 };
 type DriveAccount = { id: string; email: string | null; name: string | null };
 type DriveFile = { id: string; name: string; mimeType: string; modifiedTime?: string };
-type EmailDraft = { id: string; recipient: string | null; subject: string; body: string; status: string; created_at: string };
+type EmailDraft = { id: string; google_account_id:string; recipient: string | null; subject: string; body: string; status: string; created_at: string };
 
 const eventTypes = new Set(["meeting", "club_event", "interview", "travel"]);
 
@@ -84,22 +84,25 @@ export default function InboxPage() {
   const [driveFiles, setDriveFiles] = useState<DriveFile[]>([]);
   const [drafts, setDrafts] = useState<EmailDraft[]>([]);
   const [draftBodies, setDraftBodies] = useState<Record<string, string>>({});
+  const [pushStatus,setPushStatus]=useState<{configured:boolean;watches:Array<{google_account_id:string;watch_expiration:string|null;last_successful_push:string|null;last_successful_sync:string|null;last_error:string|null}>}|null>(null);
 
   const headers = useCallback(() => ({ Authorization: `Bearer ${session?.access_token ?? ""}` }), [session?.access_token]);
 
   const load = useCallback(async () => {
     if (!session?.access_token) return;
     try {
-      const [fileResponse, feedResponse, driveResponse, draftResponse] = await Promise.all([
+      const [fileResponse, feedResponse, driveResponse, draftResponse,statusResponse] = await Promise.all([
         fetch("/api/files", { headers: headers(), cache: "no-store" }),
         fetch("/api/intelligence/feed", { headers: headers(), cache: "no-store" }),
         fetch("/api/drive/files", { headers: headers(), cache: "no-store" }),
         fetch("/api/gmail/drafts", { headers: headers(), cache: "no-store" }),
+        fetch("/api/intelligence/status", {headers:headers(),cache:"no-store"}),
       ]);
       const fileBody = await fileResponse.json();
       const feedBody = await feedResponse.json();
       const driveBody = await driveResponse.json();
       const draftBody = await draftResponse.json();
+      const statusBody=await statusResponse.json();
       if (!fileResponse.ok) throw new Error(fileBody.error || "Could not load files");
       if (!feedResponse.ok) throw new Error(feedBody.error || "Could not load assistant actions");
       setFiles(fileBody.files ?? []);
@@ -107,6 +110,7 @@ export default function InboxPage() {
       setEmailItems(feedBody.items ?? []);
       if (driveResponse.ok) { setDriveAccounts(driveBody.accounts ?? []); setDriveAccountId((current) => current || driveBody.accounts?.[0]?.id || ""); }
       if (draftResponse.ok) setDrafts(draftBody.drafts ?? []);
+      if(statusResponse.ok) setPushStatus(statusBody.gmailPush ?? null);
       setError(null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Inbox is unavailable");
@@ -143,6 +147,17 @@ export default function InboxPage() {
     try { const response = await fetch("/api/gmail/drafts", { method: "POST", headers: { ...headers(), "Content-Type": "application/json" }, body: JSON.stringify({ id, action, draftBody: draftBodies[id] }) }); const body = await response.json(); if (!response.ok) throw new Error(body.error || "Could not update this draft"); setDrafts((current) => current.filter((draft) => draft.id !== id)); setNotice(action === "save" ? "Saved to Gmail Drafts. Nothing was sent." : "Marked as no response needed."); }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not update this draft"); }
     finally { setBusy(null); }
+  }
+
+  async function reanalyzeEmail(id:string) {
+    setBusy(id);setError(null);
+    try {
+      const response=await fetch("/api/gmail/reanalyze",{method:"POST",headers:{...headers(),"Content-Type":"application/json"},body:JSON.stringify({id})});
+      const body=await response.json();
+      if(!response.ok) throw new Error(body.error ?? body.failures?.[0] ?? "Email reanalysis failed");
+      setNotice("Email analysis refreshed. Reviewed drafts and decisions are preserved.");await load();await reloadCloud();
+    }catch(error) {setError(error instanceof Error ? error.message : "Email reanalysis failed");}
+    finally {setBusy(null);}
   }
 
   async function browseDrive() {
@@ -282,7 +297,7 @@ export default function InboxPage() {
 
       {emailItems.length ? (
         <section className="inbox-section">
-          <div className="inbox-section-title"><span>Needs a decision</span><small>{emailItems.length}</small></div>
+          <div className="inbox-section-title"><span>Email intelligence & attention</span><small>{emailItems.length}</small></div>
           <div className="decision-list">
             {emailItems.map((item) => {
               const isEvent = eventTypes.has(item.type);
@@ -303,6 +318,7 @@ export default function InboxPage() {
                       <button type="button" disabled={busy === item.id} onClick={() => void decide(item.id, "add_to_calendar")}>Add</button>
                     </> : null}
                     <button type="button" disabled={busy === item.id} onClick={() => void decide(item.id, "ignore")}>Ignore</button>
+                    {/^\d+$/.test(item.id) ? <button type="button" disabled={busy===item.id} onClick={()=>void reanalyzeEmail(item.id)}>{busy===item.id ? "Analyzing…" : "Re-analyze email"}</button> : null}
                   </div>
                 </article>
               );
@@ -310,6 +326,8 @@ export default function InboxPage() {
           </div>
         </section>
       ) : null}
+
+      {pushStatus ? <details className="inbox-section"><summary>Email delivery · {pushStatus.configured ? "Push configured" : "Scheduled fallback · push setup required"}</summary>{pushStatus.watches.map(watch=><article key={watch.google_account_id}><strong>{driveAccounts.find(account=>account.id===watch.google_account_id)?.email ?? "Connected Gmail account"}</strong><p>Watch: {watch.watch_expiration ? new Date(watch.watch_expiration).getTime()>Date.now() ? `Expires ${new Date(watch.watch_expiration).toLocaleString()}` : "Expired — maintenance will retry" : "Not registered"}</p><p>Last push: {watch.last_successful_push ? new Date(watch.last_successful_push).toLocaleString() : "Not received"} · Last processed: {watch.last_successful_sync ? new Date(watch.last_successful_sync).toLocaleString() : "Not yet"}</p>{watch.last_error ? <p role="alert">{watch.last_error}</p> : null}</article>)}<Link href="/debug/sync">View automation diagnostics</Link></details> : null}
 
       {drafts.length ? <section className="inbox-section"><div className="inbox-section-title"><span>Replies ready for review</span><small>{drafts.length}</small></div><div className="draft-list">{drafts.map((draft) => <article key={draft.id}><small>To {draft.recipient || "unknown recipient"}</small><h2>{draft.subject}</h2><textarea aria-label={`Draft reply for ${draft.subject}`} rows={7} value={draftBodies[draft.id] ?? draft.body} onChange={(event) => setDraftBodies((current) => ({ ...current, [draft.id]: event.target.value }))} /><div><button type="button" disabled={busy === `draft:${draft.id}`} onClick={() => void handleDraft(draft.id, "save")}>{busy === `draft:${draft.id}` ? "Saving…" : "Save to Gmail Drafts"}</button><button type="button" disabled={busy === `draft:${draft.id}`} onClick={() => void handleDraft(draft.id, "ignore")}>No response needed</button></div><em>ASS can create a draft, but it cannot send it.</em></article>)}</div></section> : null}
 

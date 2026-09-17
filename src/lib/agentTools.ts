@@ -20,6 +20,7 @@ const defs:Definition[]=[
  {name:"gmail_recent",description:"Get recent real Gmail messages, optionally from a particular connected account.",properties:{accountId:str},required:[],progress:"Reading recent email…"},
  {name:"gmail_read",description:"Read a real email thread from a connected account. Use IDs returned by Gmail search.",properties:{accountId:str,threadId:str},required:["accountId","threadId"],progress:"Reading email thread…"},
  {name:"gmail_actionable",description:"Retrieve pending analyzed emails requiring response/action; use Gmail search/read to verify source facts.",properties:{query:str},required:[],progress:"Checking emails needing attention…"},
+ {name:"gmail_drafts",description:"Read saved ASS email drafts waiting for review, with their original Google account. Never send.",properties:{},required:[],progress:"Checking prepared replies…"},
  {name:"gmail_createDraft",description:"Create an internal reviewable ASS email draft, never send. Requires account, recipient, subject, body. Inbox offers Save to Gmail Drafts.",properties:{accountId:str,recipient:str,subject:str,body:str,threadId:str,inReplyToMessageId:str,emailSuggestionId:num},required:["accountId","recipient","subject","body"],progress:"Preparing your draft…"},
  {name:"drive_search",description:"Search actual Google Drive file names and content across healthy connected accounts. Use short meaningful search terms.",properties:{query:str,accountId:str},required:["query"],progress:"Looking in Drive…"},
  {name:"drive_read",description:"Read a Drive file using IDs from search. Text/Office content is read directly; PDF/image uses the existing evidence extraction pipeline. Read-only; no conversions/style training.",properties:{accountId:str,fileId:str},required:["accountId","fileId"],progress:"Reading your document…"},
@@ -84,7 +85,9 @@ export async function executeAgentTool(ctx:AgentContext,name:string,args:Record<
   }else if(name==="tasks_search"){
    let query=db().from("todos").select("*").eq("user_id",ctx.userId).eq("done",false);if(args.query)query=query.ilike("title",`%${text(args,"query",300)}%`);data=await resultOf(query.limit(50));
   }else if(name==="gmail_actionable"){
-   healthy(ctx,"gmail");data=await resultOf(db().from("email_suggestions").select("id,google_account_id,title,summary,sender,thread_id,response_needed,action_required,date,time,confidence").eq("user_id",ctx.userId).eq("status","pending").or("response_needed.eq.true,action_required.eq.true").limit(20));
+   data=await resultOf(db().from("email_suggestions").select("id,google_account_id,title,summary,sender,thread_id,response_needed,response_confidence,response_reason,automation_labels,action_required,date,time,confidence").eq("user_id",ctx.userId).eq("status","pending").or("response_needed.eq.true,action_required.eq.true").limit(20));
+  }else if(name==="gmail_drafts"){
+   data=await resultOf(db().from("email_drafts").select("id,google_account_id,thread_id,recipient,subject,body,status,gmail_draft_id,created_at").eq("user_id",ctx.userId).in("status",["ready","edited"]).order("created_at",{ascending:false}).limit(20));
   }else if(name==="writing_context"){
    let query=db().from("writing_samples").select("context_type,content,confidence,source_kind").eq("user_id",ctx.userId).eq("span_type","user_written").eq("approved",true).gte("confidence",.9);if(args.query)query=query.ilike("content",`%${text(args,"query",300)}%`);data=await resultOf(query.order("created_at",{ascending:false}).limit(8));
   }else if(name==="memory_search"){

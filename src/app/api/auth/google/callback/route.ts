@@ -3,6 +3,7 @@ import { exchangeGoogleCode, verifyGoogleOAuthState } from "@/lib/googleAuth";
 import { syncGoogleCalendarForUser } from "@/lib/googleCalendarSync";
 import { scanRecentGmailSuggestions } from "@/lib/gmailScan";
 import { verifyGoogleServices } from "@/lib/googleServiceHealth";
+import { renewGmailWatches } from "@/lib/gmailPush";
 
 export async function GET(req: NextRequest) {
   let serviceAttention = false;
@@ -36,6 +37,7 @@ export async function GET(req: NextRequest) {
     // must not undo an otherwise valid OAuth connection.
     after(async () => {
       try {
+        await renewGmailWatches(state.userId,connection.accountId);
         await scanRecentGmailSuggestions(state.userId, connection.accountId);
       } catch (scanError) {
         console.error("Initial Gmail intelligence scan failed:", scanError);
