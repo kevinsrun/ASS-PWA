@@ -28,8 +28,10 @@ export async function validateGmailPush(authorization: string | null, keys: Para
 export function decodeGmailPush(body: unknown) {
   const config = gmailPushConfiguration();
   const envelope = body as { subscription?: string; message?: { data?: string; messageId?: string } };
+  if (envelope?.subscription !== config.subscription) throw new Error(`Unexpected Pub/Sub subscription: ${typeof envelope?.subscription === "string" ? envelope.subscription.slice(0, 200) : "missing"}`);
   if (!envelope || envelope.subscription !== config.subscription || typeof envelope.message?.messageId !== "string" || envelope.message.messageId.length > 200 || typeof envelope.message.data !== "string" || envelope.message.data.length > 10_000 || !/^[A-Za-z0-9_+/=-]+$/.test(envelope.message.data)) throw new Error("Invalid Pub/Sub envelope");
   const decoded = JSON.parse(Buffer.from(envelope.message.data, "base64url").toString("utf8")) as { emailAddress?: unknown; historyId?: unknown };
+  if (typeof decoded.historyId !== "string") throw new Error(`Unexpected Gmail history ID type: ${typeof decoded.historyId}`);
   if (typeof decoded.emailAddress !== "string" || decoded.emailAddress.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(decoded.emailAddress) || typeof decoded.historyId !== "string" || !/^\d{1,30}$/.test(decoded.historyId) || BigInt(decoded.historyId) <= BigInt(0)) throw new Error("Invalid Gmail notification");
   return { email: decoded.emailAddress, historyId: decoded.historyId, notificationId: envelope.message.messageId };
 }

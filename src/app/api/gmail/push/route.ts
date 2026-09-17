@@ -12,7 +12,10 @@ export async function POST(request: NextRequest) {
     const raw = await request.text();
     if (raw.length > 16_384) return NextResponse.json({ error: "Payload too large" }, { status: 413 });
     notification = decodeGmailPush(JSON.parse(raw));
-  } catch { return NextResponse.json({ error: "Invalid Gmail notification" }, { status: 400 }); }
+  } catch (error) {
+    console.error(JSON.stringify({service:"gmail-push",stage:"payload-rejected",message:error instanceof Error ? error.message : "Invalid Gmail notification"}));
+    return NextResponse.json({ error: "Invalid Gmail notification" }, { status: 400 });
+  }
   try {
     const accounts = await persistGmailPush(notification);
     after(async () => {
