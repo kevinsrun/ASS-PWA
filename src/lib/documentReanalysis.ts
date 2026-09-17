@@ -36,7 +36,7 @@ export async function reanalyzeSource(userId: string, body: {fileId?: string;sou
         fetchOriginal=async()=>({name:String(source.file_metadata?.title ?? "Imported text")+".txt",mimeType:"text/plain",buffer:Buffer.from(source.content)});
       }
     }
-    const {data:claimed,error:claimError}=await db.from(lease.table).update({[lease.field]:"analyzing",updated_at:new Date().toISOString()}).eq("id",lease.id).eq("user_id",user.id).eq("updated_at",version).select("id").maybeSingle();
+    const {data:claimed,error:claimError}=await db.from(lease.table).update({[lease.field]:"analyzing",processing_error:null,updated_at:new Date().toISOString()}).eq("id",lease.id).eq("user_id",user.id).eq("updated_at",version).select("id").maybeSingle();
     if (claimError || !claimed) { lease=null; if(claimError)throw claimError; throw new ApiAuthError("This source changed or another analysis started. Refresh and try again.",409); }
     leaseClaimed = true;
     if(!fetchOriginal)throw new Error("Original content resolver is missing");const input=await fetchOriginal();
@@ -45,7 +45,7 @@ export async function reanalyzeSource(userId: string, body: {fileId?: string;sou
     const {data: existing,error: existingError} = await query;
     if (existingError) throw existingError;
     const analysis = await analyzeFile(input,user.id);
-    const {data: extraction,error} = await db.from("file_extractions").insert({user_id:user.id,imported_file_id:fileId,imported_source_id:sourceId,model:process.env.GEMINI_MODEL ?? "gemini-2.5-flash",classification:analysis.classification,confidence:analysis.confidence,summary:analysis.summary,structured_data:analysis.structuredData}).select("id").single();
+    const {data: extraction,error} = await db.from("file_extractions").insert({user_id:user.id,imported_file_id:fileId,imported_source_id:sourceId,model:process.env.GEMINI_MODEL ?? "gemini-3.8-flash",classification:analysis.classification,confidence:analysis.confidence,summary:analysis.summary,structured_data:analysis.structuredData}).select("id").single();
     if (error || !extraction) throw error ?? new Error("Re-analysis could not be persisted");
     const merge = planReanalysisMerge(existing ?? [],analysis.items);
     const row = (item: typeof analysis.items[number]) => ({extraction_id:extraction.id,item_type:item.type,normalized_type:item.normalizedType,title:item.title,description:item.description,due_at:item.dueAt,duration_minutes:item.durationMinutes,time_zone:item.timeZone,recurrence_rule:item.recurrenceRule,location:item.location,confidence:item.confidence,required:item.required,optionality:item.optionality,attendance_policy:item.attendancePolicy,classification_reason:item.classificationReason,payload:item.payload,updated_at:new Date().toISOString()});
@@ -66,7 +66,7 @@ export async function reanalyzeSource(userId: string, body: {fileId?: string;sou
   } catch (error) {
     if (lease && leaseClaimed) {
       const db=getServiceSupabaseClient();
-      await db?.from(lease.table).update({[lease.field]:lease.previous,processing_error:error instanceof Error?error.message:"Re-analysis failed",updated_at:new Date().toISOString()}).eq("id",lease.id).eq("user_id",lease.userId).eq(lease.field,"analyzing");
+      await db?.from(lease.table).update({[lease.field]:lease.previous==="analyzing"?"failed":lease.previous,processing_error:error instanceof Error?error.message:"Re-analysis failed",updated_at:new Date().toISOString()}).eq("id",lease.id).eq("user_id",lease.userId).eq(lease.field,"analyzing");
     }
     console.error(JSON.stringify({service:"document-reanalysis",stage:"failed",message:error instanceof Error?error.message:"Re-analysis failed"}));
     throw error;

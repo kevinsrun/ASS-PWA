@@ -187,7 +187,7 @@ export default function InboxPage() {
 
   async function reanalyze(id:string,isFile:boolean) {
     setBusy(`reanalyze:${id}`); setError(null);
-    if(isFile)setFiles(current=>current.map(file=>file.id===id?{...file,status:"analyzing"}:file));else setTexts(current=>current.map(source=>source.id===id?{...source,processing_status:"analyzing"}:source));
+    if(isFile)setFiles(current=>current.map(file=>file.id===id?{...file,status:"analyzing",processing_error:null}:file));else setTexts(current=>current.map(source=>source.id===id?{...source,processing_status:"analyzing",processing_error:null}:source));
     try {
       const response=await fetch("/api/files/reanalyze",{method:"POST",headers:{...headers(),"Content-Type":"application/json"},body:JSON.stringify(isFile ? {fileId:id} : {sourceId:id})});
       const body=await response.json(); if(!response.ok)throw new Error(body.error ?? "Re-analysis failed");

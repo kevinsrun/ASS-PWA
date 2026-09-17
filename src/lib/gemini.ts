@@ -5,7 +5,7 @@ const keys =
 
 let currentKeyIndex = 0;
 
-export function getGeminiModel(model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash", responseSchema?: Schema) {
+export function getGeminiModel(model = process.env.GEMINI_MODEL ?? "gemini-3.8-flash", responseSchema?: Schema) {
   if (keys.length === 0) {
     throw new Error("No Gemini API keys configured");
   }
