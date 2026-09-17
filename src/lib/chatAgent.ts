@@ -53,7 +53,10 @@ Latest user request: ${message}` }]}];
   const {error}=await db.from("assistant_action_runs").update({parsed_actions:trace.map(item=>({tool:item.tool,arguments:item.arguments})),validation_results:trace,execution_results:ctx.actions,final_reply:reply,status:ctx.actions.some(a=>a.status==="requires_confirmation")?"awaiting_confirmation":failures.length?"partial":"completed",completed_at:new Date().toISOString()}).eq("user_id",userId).eq("id",runId);if(error)throw error;
   return result;
  }catch(error){
-  await db.from("assistant_action_runs").update({validation_results:trace,execution_results:ctx.actions,status:"partial",final_reply:error instanceof Error?error.message:"Agent failed",completed_at:new Date().toISOString()}).eq("id",runId).eq("user_id",userId);
+  const completed=trace.filter(item=>item.result.success&&/create|update|delete|move|reanalyze/.test(item.tool));
+  const reply=`The request stopped: ${error instanceof Error?error.message:"Agent failed"}.`+(completed.length?`\n\nAlready completed: ${completed.map(item=>item.tool.replaceAll("_"," ")).join(", ")}. Check Inbox/calendar before retrying; these changes remain saved.`:"\n\nReview the tool results before retrying.");
+  await db.from("assistant_action_runs").update({validation_results:trace,execution_results:ctx.actions,status:"partial",final_reply:reply,completed_at:new Date().toISOString()}).eq("id",runId).eq("user_id",userId);
+  if(trace.length)return {reply,runId,actionResults:ctx.actions,sources:[...new Map(sources.map(source=>[source.url,source])).values()].slice(0,12),toolTrace:trace.map(item=>({tool:item.tool,success:item.result.success,latencyMs:item.result.metadata.latencyMs,error:item.result.error})),reconnect:trace.some(item=>item.result.metadata.reconnectUrl)};
   throw error;
  }
 }
