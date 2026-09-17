@@ -15,6 +15,6 @@ export async function importTextSource(userId:string,title:string,content:string
  let sourceId=existing?.id as string|undefined;
  if(!sourceId){const {data,error}=await db.from("imported_sources").insert({user_id:userId,source_type:sourceType,external_id:externalId,content,processing_status:"uploaded",file_metadata:{title:title.slice(0,240),characterCount:content.length},user_context:sourceType==="imessage"?{direction:"sent_only",confirmedByUser:true}:{}}).select("id").single();if(error||!data)throw error ?? new Error("Could not save original text");sourceId=data.id;}
  const changes=await analyzeSource(userId,sourceId!);
- const {data:items,error:itemsError}=await db.from("extraction_items").select("title,normalized_type,due_at,confidence,classification_reason,required,optionality").eq("user_id",userId).eq("imported_source_id",sourceId).limit(100);if(itemsError)throw itemsError;
- return {id:sourceId,...changes,items};
+ const {data:items,error:itemsError}=await db.from("extraction_items").select("title,normalized_type,due_at,confidence,classification_reason,required,optionality,review_status").eq("user_id",userId).eq("imported_source_id",sourceId).limit(100);if(itemsError)throw itemsError;
+ return {id:sourceId,...changes,items,itemCount:items?.length ?? 0,pendingCount:(items ?? []).filter(item=>item.review_status==="pending"||item.review_status==="approved").length};
 }

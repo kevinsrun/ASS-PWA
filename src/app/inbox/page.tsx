@@ -44,6 +44,7 @@ type ImportedText = {
   processing_status: "uploaded" | "analyzing" | "extracted" | "needs_review" | "failed";
   processing_error: string | null;
   created_at: string;
+  last_analyzed_at: string | null;
   extraction: { summary: string; confidence: number } | null;
   items: ExtractionItem[];
 };
@@ -167,7 +168,8 @@ export default function InboxPage() {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Could not analyze this text");
       setTextTitle(""); setTextContent("");
-      setNotice(body.pendingCount ? `Analysis complete. Review ${body.pendingCount} suggested action${body.pendingCount === 1 ? "" : "s"}.` : "Text analyzed and committed successfully.");
+      window.sessionStorage.setItem("ass_selected_context",JSON.stringify({kind:"source",id:body.id,at:Date.now()}));
+      setNotice(body.pendingCount ? `Analysis complete. Review ${body.pendingCount} suggestion${body.pendingCount === 1 ? "" : "s"}. Nothing was added to your calendar or tasks.` : "Analysis complete. No pending suggestions need review.");
       await load(); await reloadCloud();
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not analyze this text"); }
     finally { setBusy(null); }
@@ -186,6 +188,7 @@ export default function InboxPage() {
   }
 
   async function reanalyze(id:string,isFile:boolean) {
+    window.sessionStorage.setItem("ass_selected_context",JSON.stringify({kind:isFile?"file":"source",id,at:Date.now()}));
     setBusy(`reanalyze:${id}`); setError(null);
     if(isFile)setFiles(current=>current.map(file=>file.id===id?{...file,status:"analyzing",processing_error:null}:file));else setTexts(current=>current.map(source=>source.id===id?{...source,processing_status:"analyzing",processing_error:null}:source));
     try {
@@ -317,7 +320,7 @@ export default function InboxPage() {
         ) : (
           <div className="file-list">
             {[...pendingFiles, ...files.filter((file) => !pendingFiles.includes(file))].map((file) => (
-              <article key={file.id} className="file-card">
+              <article key={file.id} className="file-card" onClickCapture={()=>window.sessionStorage.setItem("ass_selected_context",JSON.stringify({kind:"file",id:file.id,at:Date.now()}))} onFocusCapture={()=>window.sessionStorage.setItem("ass_selected_context",JSON.stringify({kind:"file",id:file.id,at:Date.now()}))}>
                 <div className="file-card-heading">
                   {file.status === "failed" ? <AlertCircle size={20} /> : file.status === "extracted" ? <FileCheck2 size={20} /> : <FileText size={20} />}
                   <div><h2>{file.name}</h2><p>{human(file.classification)} · {fileSize(file.byte_size)} · {file.linked_course?.course_code || (file.linked_project_local_id ? `Project ${file.linked_project_local_id}` : "Unlinked")} · {file.last_analyzed_at ? `Analyzed ${new Date(file.last_analyzed_at).toLocaleDateString()}` : `Added ${new Date(file.created_at).toLocaleDateString()}`}</p></div>
@@ -332,7 +335,17 @@ export default function InboxPage() {
         )}
       </section>
 
-      {texts.length ? <section className="inbox-section"><div className="inbox-section-title"><span>Text imports</span><small>{texts.length}</small></div><div className="file-list">{texts.map(source=><article key={source.id} className="file-card"><div className="file-card-heading"><FileText size={20}/><div><h2>{source.title}</h2><p>{human(source.source_type)}</p></div><span className={`file-status is-${source.processing_status}`}>{human(source.processing_status)}</span></div>{source.processing_error ? <p className="file-failure">{source.processing_error}</p> : source.extraction?.summary ? <p className="file-summary">{source.extraction.summary}</p> : null}<button type="button" disabled={Boolean(busy)} onClick={()=>void reanalyze(source.id,false)}>{busy===`reanalyze:${source.id}` ? "Re-analyzing…" : "Re-analyze"}</button><ExtractionReview items={source.items} busy={busy} conversionTypes={conversionTypes} onChange={(id,value)=>setConversionTypes(current=>({...current,[id]:value}))} onReview={(id,action,type)=>void review(id,action,type)}/></article>)}</div></section> : null}
+      {texts.length ? <section className="inbox-section">
+        <div className="inbox-section-title"><span>Text imports</span><small>{texts.length}</small></div>
+        <div className="file-list">{texts.map(source=><article key={source.id} className="file-card"
+          onClickCapture={()=>window.sessionStorage.setItem("ass_selected_context",JSON.stringify({kind:"source",id:source.id,at:Date.now()}))}
+          onFocusCapture={()=>window.sessionStorage.setItem("ass_selected_context",JSON.stringify({kind:"source",id:source.id,at:Date.now()}))}>
+          <div className="file-card-heading"><FileText size={20}/><div><h2>{source.title}</h2><p>{human(source.source_type)}{source.last_analyzed_at?` · Analyzed ${new Date(source.last_analyzed_at).toLocaleString()}`:""}</p></div><span className={`file-status is-${source.processing_status}`}>{source.processing_status==="extracted"?"Analyzed":human(source.processing_status)}</span></div>
+          {source.processing_error?<p className="file-failure" role="alert">{source.processing_error}</p>:source.extraction?.summary?<details className="analysis-understanding"><summary>Document understanding</summary><p className="file-summary">{source.extraction.summary}</p></details>:null}
+          <button type="button" disabled={Boolean(busy)} onClick={()=>void reanalyze(source.id,false)}>{busy===`reanalyze:${source.id}`?"Re-analyzing…":source.processing_error?"Retry analysis":"Re-analyze"}</button>
+          <ExtractionReview items={source.items} busy={busy} conversionTypes={conversionTypes} onChange={(id,value)=>setConversionTypes(current=>({...current,[id]:value}))} onReview={(id,action,type)=>void review(id,action,type)}/>
+        </article>)}</div>
+      </section>:null}
     </main>
   );
 }

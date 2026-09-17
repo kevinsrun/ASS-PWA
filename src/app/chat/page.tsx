@@ -70,6 +70,7 @@ export default function ChatPage() {
           message: text,
           messages: nextMessages.slice(-20),
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          selectedContext: (()=>{try{return JSON.parse(window.sessionStorage.getItem("ass_selected_context") ?? "null");}catch{return null;}})(),
         }),
       });
 

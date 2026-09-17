@@ -1196,6 +1196,7 @@ export default function CalendarPage() {
                           {day.plans.map((plan) => (
                             <button
                               key={`popover-${plan.id}`}
+                              onClickCapture={()=>window.sessionStorage.setItem("ass_selected_context",JSON.stringify({kind:"calendar",id:String(plan.id),date:day.key,at:Date.now()}))}
                               type="button"
                               onClick={() => {
                                 setSelectedDate(day.key);
@@ -1341,6 +1342,7 @@ export default function CalendarPage() {
                       return (
                         <article
                           key={`${plan.id}-mobile`}
+                          onClickCapture={()=>window.sessionStorage.setItem("ass_selected_context",JSON.stringify({kind:"calendar",id:String(plan.id),date:selectedDate,at:Date.now()}))}
                           className={`rounded-2xl border-l-4 p-3 ${categoryMeta.block}`}
                         >
                           <div className="flex items-start justify-between gap-3">
@@ -1653,6 +1655,7 @@ export default function CalendarPage() {
                           return (
                             <article
                               key={`${plan.id}-${day.key}`}
+                              onClickCapture={()=>window.sessionStorage.setItem("ass_selected_context",JSON.stringify({kind:"calendar",id:String(plan.id),date:day.key,at:Date.now()}))}
                               draggable
                               onDragStart={(event) =>
                                 event.dataTransfer.setData("text/plain", String(plan.id))

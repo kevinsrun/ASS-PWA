@@ -36,6 +36,7 @@ try{
  assert.equal(planner.permitsInferredAction(plan('CALENDAR_CREATE'),'CALENDAR_CREATE'),true);
  assert.equal(planner.permitsInferredAction({...plan('CALENDAR_CREATE'),clarification:'Which workshop?'},'CALENDAR_CREATE'),false);
  assert.equal(planner.permitsInferredAction({...plan('TASK_CREATE'),intents:[{intent:'TASK_CREATE',confidence:.89}]},'TASK_CREATE'),false);
+ assert.ok(await planner.resolveSelectedContext('user',{kind:'file',id:'file',at:Date.now()}));assert.equal(await planner.resolveSelectedContext('other-user',{kind:'file',id:'file',at:Date.now()}),null);assert.equal(await planner.resolveSelectedContext('user',{kind:'file',id:'file',at:Date.now()-31*60000}),null);
  const ctx={userId:'user',request:'Find email and add conference to my calendar; draft a reply; re-analyze my syllabus',runId:'run',timeZone:'America/New_York',health,actions:[]};
  const search=await executeAgentTool(ctx,'gmail_search',{query:'radiology',accountId:'account'});assert.equal(search.success,true);assert.ok(network.some(url=>url.includes('q=radiology')));assert.equal(search.metadata.sources[0].kind,'gmail');assert.match(search.metadata.sources[0].url,/authuser=brown/);
  const thread=await executeAgentTool(ctx,'gmail_read',{accountId:'account',threadId:'thread'});assert.equal(thread.success,true);assert.match(thread.data[0].body,/Workshop/);
