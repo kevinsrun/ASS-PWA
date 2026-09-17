@@ -161,6 +161,8 @@ export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   createdAt?: string;
+  sources?: Array<{label:string;url:string;kind:"gmail"|"drive"|"document"}>;
+  reconnect?: boolean;
 };
 
 export type CodingWorkflow = {

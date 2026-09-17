@@ -4,7 +4,7 @@ export type DriveFile = { id: string; name: string; mimeType: string; modifiedTi
 
 async function driveJson<T>(userId: string, accountId: string, path: string): Promise<T> {
   const token = await getGoogleAccessToken(userId, accountId);
-  const response = await fetch(`https://www.googleapis.com/drive/v3/${path}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+  const response = await fetch(`https://www.googleapis.com/drive/v3/${path}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store",signal:AbortSignal.timeout(20_000) });
   if (!response.ok) {
     const body = await response.text().then((value) => value.slice(0, 1000));
     if (response.status === 403 && /insufficient authentication scopes|insufficientPermissions/i.test(body)) throw new Error("Google Drive permission is missing. Reconnect this Google account from Settings to grant Drive read access.");
@@ -14,6 +14,11 @@ async function driveJson<T>(userId: string, accountId: string, path: string): Pr
 }
 
 function escapedQuery(value: string) { return value.replaceAll("\\", "\\\\").replaceAll("'", "\\'"); }
+
+export async function searchDriveFiles(userId:string,accountId:string,query:string) {
+  const q=encodeURIComponent(`trashed = false and (name contains '${escapedQuery(query)}' or fullText contains '${escapedQuery(query)}')`);
+  return (await driveJson<{files:DriveFile[]}>(userId,accountId,`files?q=${q}&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name,mimeType,modifiedTime,webViewLink,parents)`)).files ?? [];
+}
 
 export async function listDriveFolder(userId: string, accountId: string, folderName = "Grow Up") {
   const fields = encodeURIComponent("files(id,name,mimeType,modifiedTime,parents,size,webViewLink),nextPageToken");

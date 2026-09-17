@@ -19,10 +19,6 @@ type PendingAction = AssistantActionResult & { runId: string };
 
 export default function ChatPage() {
   const {
-    todos,
-    habits,
-    plans,
-    journals,
     chatMessages,
     codingWorkflows,
     profile,
@@ -45,6 +41,7 @@ export default function ChatPage() {
   const [workflowObjective, setWorkflowObjective] = useState("");
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
   const [chatError, setChatError] = useState("");
+  const [toolProgress,setToolProgress]=useState("Thinking…");
   const readingRef = useRef<HTMLElement>(null);
   useEffect(() => { readingRef.current?.scrollTo({ top: readingRef.current.scrollHeight, behavior: "smooth" }); }, [messages.length, loading, pendingActions.length]);
 
@@ -62,30 +59,30 @@ export default function ChatPage() {
     setChatMessages(nextMessages);
     setInput("");
     setLoading(true);
+    setToolProgress("Checking your request…");
 
     try {
       if (!session?.access_token) throw new Error("Sign in so ASS can safely execute actions.");
-      const response = await fetch("/api/chat", {
+      const response = await fetch("/api/chat/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
           message: text,
           messages: nextMessages.slice(-20),
-          todos,
-          habits,
-          plans,
-          journals,
-          codingWorkflows,
-          profile,
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
       });
 
-      const data = await response.json() as { reply?: string; error?: string; runId?: string; actionResults?: AssistantActionResult[] };
-      if (!response.ok) throw new Error(data.error ?? data.reply ?? "ASS could not complete the request.");
+      if(!response.ok){const error=await response.json();throw new Error(error.error ?? "ASS could not complete the request");}
+      if(!response.body)throw new Error("Agent response stream is unavailable");
+      const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="";
+      let data:{reply?:string;error?:string;runId?:string;actionResults?:AssistantActionResult[];sources?:ChatMessage["sources"];reconnect?:boolean}|null=null;
+      while(true){const {value,done}=await reader.read();buffer+=decoder.decode(value,{stream:!done});let newline;while((newline=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,newline);buffer=buffer.slice(newline+1);if(!line.trim())continue;const event=JSON.parse(line);if(event.type==="progress")setToolProgress(event.message);if(event.type==="error")throw new Error(event.error);if(event.type==="result")data=event;}if(done)break;}
+      if(!data)throw new Error("The agent response ended before completion. Check Inbox/calendar before retrying actions.");
       const awaiting = (data.actionResults ?? []).filter((result) => result.status === "requires_confirmation");
       if (data.runId) setPendingActions(awaiting.map((result) => ({ ...result, runId: data.runId! })));
       await reloadCloud();
+      window.localStorage.setItem("ass_refresh_at",String(Date.now()));window.dispatchEvent(new Event("ass:data-changed"));
       setChatError("");
       setChatMessages((prev) =>
         [
@@ -93,6 +90,7 @@ export default function ChatPage() {
           {
             role: "assistant" as const,
             content: data.reply ?? "I could not generate a response.",
+            sources:data.sources,reconnect:data.reconnect,
             createdAt: new Date().toISOString(),
           },
         ].slice(-80)
@@ -305,11 +303,13 @@ Do not use leaked proprietary files or unauthorized code.`;
             >
               {message.role === "assistant" && <Bot className="mb-2 inline text-slate-400" size={16} />}
               <div>{message.content}</div>
+              {message.sources?.length ? <div className="chat-source-chips" aria-label="Sources">{message.sources.map(source=><a key={source.url} href={source.url} target={source.url.startsWith("https://")?"_blank":undefined} rel="noreferrer">{source.label}</a>)}</div> : null}
+              {message.reconnect ? <a className="chat-reconnect" href="/profile">Review connected accounts</a> : null}
             </div>
           ))}
           {loading && (
             <div className="chat-thinking mr-auto rounded-2xl px-4 py-3" role="status">
-              Thinking…
+              {toolProgress}
             </div>
           )}
           {pendingActions.map((item) => {

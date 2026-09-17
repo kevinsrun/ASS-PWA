@@ -213,6 +213,7 @@ export default function ProfilePage() {
             <div><strong>Sync diagnostics</strong><span>Accounts, recent runs, and failures</span></div>
             <ChevronRight size={17} aria-hidden="true" />
           </Link>
+          <Link href="/debug/agent" className="settings-row settings-row--link"><Activity size={20} aria-hidden="true"/><div><strong>Agent Debug</strong><span>Tool calls, results, errors, and latency</span></div><ChevronRight size={17}/></Link>
         </div>
       </section>
 

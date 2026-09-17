@@ -103,7 +103,7 @@ export default function InboxPage() {
       if (!feedResponse.ok) throw new Error(feedBody.error || "Could not load assistant actions");
       setFiles(fileBody.files ?? []);
       setTexts(fileBody.texts ?? []);
-      setEmailItems((feedBody.items ?? []).filter((item: EmailIntelligenceItem) => item.accountEmail !== "ASS"));
+      setEmailItems(feedBody.items ?? []);
       if (driveResponse.ok) { setDriveAccounts(driveBody.accounts ?? []); setDriveAccountId((current) => current || driveBody.accounts?.[0]?.id || ""); }
       if (draftResponse.ok) setDrafts(draftBody.drafts ?? []);
       setError(null);
@@ -113,6 +113,7 @@ export default function InboxPage() {
   }, [headers, session?.access_token]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(()=>{const refresh=()=>void load();const crossTab=(event:StorageEvent)=>{if(event.key==="ass_refresh_at")refresh();};window.addEventListener("ass:data-changed",refresh);window.addEventListener("focus",refresh);window.addEventListener("storage",crossTab);return()=>{window.removeEventListener("ass:data-changed",refresh);window.removeEventListener("focus",refresh);window.removeEventListener("storage",crossTab);};},[load]);
 
   async function upload(selected: FileList | File[], source: "local" | "drag_drop") {
     if (!session?.access_token || selected.length === 0) return;
@@ -186,11 +187,13 @@ export default function InboxPage() {
 
   async function reanalyze(id:string,isFile:boolean) {
     setBusy(`reanalyze:${id}`); setError(null);
+    if(isFile)setFiles(current=>current.map(file=>file.id===id?{...file,status:"analyzing"}:file));else setTexts(current=>current.map(source=>source.id===id?{...source,processing_status:"analyzing"}:source));
     try {
       const response=await fetch("/api/files/reanalyze",{method:"POST",headers:{...headers(),"Content-Type":"application/json"},body:JSON.stringify(isFile ? {fileId:id} : {sourceId:id})});
       const body=await response.json(); if(!response.ok)throw new Error(body.error ?? "Re-analysis failed");
-      setNotice("Re-analysis complete. Manual decisions were preserved. Review the new suggestions before creating anything."); await load();
-    } catch(error) {setError(error instanceof Error ? error.message : "Re-analysis failed");} finally {setBusy(null);}
+      const reclassified=(body.changes ?? []).filter((change:{from:string;to:string})=>change.from!==change.to).length;
+      setNotice(`Re-analysis complete · ${reclassified} reclassified · ${body.added} new suggestions · ${body.removedFalseEvents ?? 0} unsupported calendar suggestions removed · ${body.preserved} decisions preserved. No existing calendar events or tasks were deleted.`); await load();await reloadCloud();window.localStorage.setItem("ass_refresh_at",String(Date.now()));
+    } catch(error) {setError(error instanceof Error ? error.message : "Re-analysis failed");await load();} finally {setBusy(null);}
   }
   async function review(itemId: string, action: "approve" | "reject", normalizedType?:string) {
     setBusy(itemId);
@@ -212,7 +215,7 @@ export default function InboxPage() {
     }
   }
 
-  async function decide(id: string, action: "going" | "maybe" | "not_going" | "add_to_calendar" | "ignore") {
+  async function decide(id: string, action: "accept" | "going" | "maybe" | "not_going" | "add_to_calendar" | "ignore") {
     setBusy(id);
     try {
       const response = await fetch("/api/intelligence/feed", {
@@ -289,6 +292,7 @@ export default function InboxPage() {
                     {item.recommendations[0] ? <em>{item.recommendations[0]}</em> : null}
                   </div>
                   <div className="decision-actions">
+                    {item.id.startsWith("alert:") ? <button type="button" disabled={busy === item.id} onClick={() => void decide(item.id,"accept")}>Reviewed</button> : !isEvent && item.accountEmail !== "ASS" ? <button type="button" disabled={busy === item.id} onClick={() => void decide(item.id,"accept")}>Create task</button> : null}
                     {isEvent ? <>
                       <button type="button" disabled={busy === item.id} onClick={() => void decide(item.id, "going")}>Going</button>
                       <button type="button" disabled={busy === item.id} onClick={() => void decide(item.id, "maybe")}>Maybe</button>
@@ -317,10 +321,10 @@ export default function InboxPage() {
                 <div className="file-card-heading">
                   {file.status === "failed" ? <AlertCircle size={20} /> : file.status === "extracted" ? <FileCheck2 size={20} /> : <FileText size={20} />}
                   <div><h2>{file.name}</h2><p>{human(file.classification)} · {fileSize(file.byte_size)} · {file.linked_course?.course_code || (file.linked_project_local_id ? `Project ${file.linked_project_local_id}` : "Unlinked")} · {file.last_analyzed_at ? `Analyzed ${new Date(file.last_analyzed_at).toLocaleDateString()}` : `Added ${new Date(file.created_at).toLocaleDateString()}`}</p></div>
-                  <span className={`file-status is-${file.status}`}>{human(file.status)}</span>
+                  <span className={`file-status is-${file.status}`}>{busy===`reanalyze:${file.id}`?"Re-analyzing":file.status==="extracted"?"Analyzed":human(file.status)}</span>
                 </div>
-                {file.processing_error ? <p className="file-failure">{file.processing_error}</p> : file.extraction?.summary ? <p className="file-summary">{file.extraction.summary}</p> : null}
-                <button type="button" disabled={Boolean(busy)} onClick={() => void reanalyze(file.id,true)}>{busy === `reanalyze:${file.id}` ? "Re-analyzing…" : "Re-analyze"}</button>
+                {file.processing_error ? <p className="file-failure">{file.processing_error}</p> : file.extraction?.summary ? <details className="analysis-understanding"><summary>Document understanding</summary><p className="file-summary">{file.extraction.summary}</p></details> : null}
+                <button type="button" disabled={Boolean(busy)} onClick={() => void reanalyze(file.id,true)}>{busy === `reanalyze:${file.id}` ? "Re-analyzing…" : file.processing_error?"Retry analysis":"Re-analyze"}</button>
                 <ExtractionReview items={file.items} busy={busy} conversionTypes={conversionTypes} onChange={(id,value)=>setConversionTypes(current=>({...current,[id]:value}))} onReview={(id,action,type)=>void review(id,action,type)} />
               </article>
             ))}

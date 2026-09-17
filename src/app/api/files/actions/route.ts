@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
     if (error || !item) throw new ApiAuthError("Extracted item not found.", 404);
     let conversionResult: Awaited<ReturnType<typeof commitExtractionItem>> | null = null;
     if (body.action === "approve") {
-      const {error: reviewError} = await supabase.from("extraction_items").update({ review_status: "approved", ...(body.normalizedType && body.normalizedType !== item.normalized_type ? {manual_corrected_at:new Date().toISOString()} : {}), updated_at: new Date().toISOString() }).eq("id", body.itemId).eq("user_id", user.id);
+      const {error: reviewError} = await supabase.from("extraction_items").update({ review_status: "approved",payload:{...item.payload,classification_source:"USER"}, ...(body.normalizedType && body.normalizedType !== item.normalized_type ? {manual_corrected_at:new Date().toISOString()} : {}), updated_at: new Date().toISOString() }).eq("id", body.itemId).eq("user_id", user.id);
       if (reviewError) throw reviewError;
       conversionResult = await commitExtractionItem(user.id, body.itemId, { normalizedType: body.normalizedType });
     } else {

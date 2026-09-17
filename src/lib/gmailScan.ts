@@ -101,7 +101,7 @@ function header(message: GmailMessage, name: string) {
   )?.value ?? "";
 }
 
-function messageText(message: GmailMessage) {
+export function messageText(message: GmailMessage) {
   const plain: string[] = [], html: string[] = [];
   function visit(part?: GmailPart) {
     if (!part) return;
@@ -114,6 +114,17 @@ function messageText(message: GmailMessage) {
   }
   visit(message.payload);
   return (plain.length ? plain : html).join("\n").slice(0,2000);
+}
+
+export async function searchGmailEmails(userId:string,accountId:string,query:string) {
+  const token=await getGoogleAccessToken(userId,accountId);
+  const page=await gmailFetch<GmailMessageList>(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=${encodeURIComponent(query)}`,token);
+  return (await fetchMessages((page.messages ?? []).map(item=>item.id),token)).map(message=>({id:message.id,threadId:message.threadId,subject:header(message,"Subject"),sender:header(message,"From"),date:header(message,"Date"),body:messageText(message),snippet:message.snippet,url:`https://mail.google.com/mail/u/?authuser=${encodeURIComponent(accountId)}#all/${message.threadId ?? message.id}`}));
+}
+export async function readGmailThread(userId:string,accountId:string,threadId:string) {
+  const token=await getGoogleAccessToken(userId,accountId);
+  const result=await gmailFetch<{messages?:GmailMessage[]}>(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}?format=full`,token);
+  return (result.messages ?? []).slice(-12).map(message=>({id:message.id,subject:header(message,"Subject"),sender:header(message,"From"),replyTo:header(message,"Reply-To"),messageId:header(message,"Message-ID"),date:header(message,"Date"),body:messageText(message),truncated:true}));
 }
 
 async function gmailFetch<T>(url: string, accessToken: string, attempt = 0): Promise<T> {

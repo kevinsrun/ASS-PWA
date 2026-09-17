@@ -74,6 +74,6 @@ export function validateExtractedItem(input: {
   return { label, confidence, normalizedType, required, evidenceText: quoted ? evidence : "", failures, actionable: !["reference", "ignore"].includes(normalizedType), autoCreate: required && confidence >= 0.9 && ["deadline", "task"].includes(normalizedType) };
 }
 
-export function preserveReviewedExtraction(item: { review_status?: string; ignore_future_imports?: boolean; deleted_at?: string | null; manual_corrected_at?: string | null }) {
-  return item.review_status !== "pending" || Boolean(item.ignore_future_imports || item.deleted_at || item.manual_corrected_at);
+export function preserveReviewedExtraction(item: { review_status?: string; ignore_future_imports?: boolean; deleted_at?: string | null; manual_corrected_at?: string | null;payload?:Record<string,unknown> }) {
+  return item.review_status !== "pending" || item.payload?.classification_source==="USER" || Boolean(item.ignore_future_imports || item.deleted_at || item.manual_corrected_at);
 }

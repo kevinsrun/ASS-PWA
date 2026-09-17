@@ -1,0 +1,4 @@
+import {NextRequest,NextResponse} from "next/server";
+import {ApiAuthError,requireApiUser} from "@/lib/serverAuth";
+import {getServiceSupabaseClient} from "@/lib/supabaseServer";
+export async function GET(request:NextRequest){try{const user=await requireApiUser(request),db=getServiceSupabaseClient();if(!db)throw new Error("ASS Cloud is not configured");const {data,error}=await db.from("assistant_action_runs").select("id,request_text,parsed_actions,validation_results,execution_results,final_reply,status,created_at,completed_at").eq("user_id",user.id).order("created_at",{ascending:false}).limit(10);if(error)throw error;return NextResponse.json({runs:data},{headers:{"Cache-Control":"no-store"}});}catch(error){return NextResponse.json({error:error instanceof Error?error.message:"Debug unavailable"},{status:error instanceof ApiAuthError?error.status:500});}}

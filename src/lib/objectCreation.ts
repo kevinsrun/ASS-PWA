@@ -191,12 +191,12 @@ export async function createAssistantAction(userId: string, input: {
 }
 
 export async function createEmailDraft(userId: string, input: {
-  googleAccountId: string; emailSuggestionId: number; threadId?: string | null;
+  googleAccountId: string; emailSuggestionId: number | null; threadId?: string | null;
   inReplyToMessageId?: string | null; recipient?: string | null; subject: string; body: string;
   context?: Record<string, unknown>;
 }) {
   const supabase = client();
-  const { data: existing, error: existingError } = await supabase.from("email_drafts").select("id").eq("email_suggestion_id", input.emailSuggestionId).maybeSingle();
+  const { data: existing, error: existingError } = input.emailSuggestionId ? await supabase.from("email_drafts").select("id").eq("user_id",userId).eq("email_suggestion_id", input.emailSuggestionId).maybeSingle() : {data:null,error:null};
   if (existingError) throw new Error(`Email draft lookup failed: ${existingError.message}`);
   const { data, error } = await supabase.from("email_drafts").upsert({
     user_id: userId,

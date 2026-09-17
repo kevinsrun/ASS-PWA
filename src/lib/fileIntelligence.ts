@@ -134,7 +134,7 @@ export async function analyzeFile(file: { name: string; mimeType: string; buffer
         confidence: validated.confidence, required: validated.required, optionality,
         attendancePolicy: ["mandatory_attendance","graded_participation","attendance_recommended","attendance_optional"].includes(String(raw.attendancePolicy)) ? raw.attendancePolicy as FileAnalysis["items"][number]["attendancePolicy"] : "not_specified",
         classificationReason: reason,
-        payload: { classificationLabel: validated.label, evidence_text: validated.evidenceText, source_location: section.location, reasoning_summary: reason, sourceSection: section.kind, documentType: classification, evidenceVerified: text !== null, schedule: validated.evidenceText, autoCreate: validated.autoCreate, guardrailFailures: validated.failures, analysisVersion: 2 },
+        payload: { classification_source:"AI",classificationLabel: validated.label, evidence_text: validated.evidenceText, source_location: section.location, reasoning_summary: reason, sourceSection: section.kind, documentType: classification, evidenceVerified: text !== null, schedule: validated.evidenceText, autoCreate: validated.autoCreate, guardrailFailures: validated.failures, analysisVersion: 2 },
       });
     }
   }
