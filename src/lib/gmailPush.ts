@@ -30,10 +30,25 @@ export function decodeGmailPush(body: unknown) {
   const envelope = body as { subscription?: string; message?: { data?: string; messageId?: string } };
   if (envelope?.subscription !== config.subscription) throw new Error(`Unexpected Pub/Sub subscription: ${typeof envelope?.subscription === "string" ? envelope.subscription.slice(0, 200) : "missing"}`);
   if (!envelope || envelope.subscription !== config.subscription || typeof envelope.message?.messageId !== "string" || envelope.message.messageId.length > 200 || typeof envelope.message.data !== "string" || envelope.message.data.length > 10_000 || !/^[A-Za-z0-9_+/=-]+$/.test(envelope.message.data)) throw new Error("Invalid Pub/Sub envelope");
-  const decoded = JSON.parse(Buffer.from(envelope.message.data, "base64url").toString("utf8")) as { emailAddress?: unknown; historyId?: unknown };
-  if (typeof decoded.historyId !== "string") throw new Error(`Unexpected Gmail history ID type: ${typeof decoded.historyId}`);
-  if (typeof decoded.emailAddress !== "string" || decoded.emailAddress.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(decoded.emailAddress) || typeof decoded.historyId !== "string" || !/^\d{1,30}$/.test(decoded.historyId) || BigInt(decoded.historyId) <= BigInt(0)) throw new Error("Invalid Gmail notification");
-  return { email: decoded.emailAddress, historyId: decoded.historyId, notificationId: envelope.message.messageId };
+  const text = Buffer.from(envelope.message.data, "base64url").toString("utf8");
+  const decoded = JSON.parse(text) as { emailAddress?: unknown; historyId?: unknown };
+  let historyId = decoded.historyId;
+  if (typeof historyId === "number") {
+    // Live Gmail notifications also contain JSON numbers. Recover the original
+    // root-property lexeme, NEVER String(the parsed number): JSON.parse may have
+    // already rounded a large cursor. Strings are tokenized as whole units so
+    // nested objects and escaped string content cannot impersonate this key.
+    const tokens = text.match(/"(?:\\.|[^"\\])*"|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/g) ?? [];
+    let depth = 0;
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token === "{" || token === "[") depth++;
+      else if (token === "}" || token === "]") depth--;
+      else if (depth === 1 && token.startsWith('"') && tokens[i + 1] === ":" && JSON.parse(token) === "historyId") historyId = tokens[i + 2];
+    }
+  }
+  if (typeof decoded.emailAddress !== "string" || decoded.emailAddress.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(decoded.emailAddress) || typeof historyId !== "string" || !/^\d{1,30}$/.test(historyId) || BigInt(historyId) <= BigInt(0)) throw new Error("Invalid Gmail notification");
+  return { email: decoded.emailAddress, historyId, notificationId: envelope.message.messageId };
 }
 export async function persistGmailPush(notification: ReturnType<typeof decodeGmailPush>) {
   const { data, error } = await database().rpc("enqueue_gmail_push", { p_email: notification.email, p_history_id: notification.historyId, p_notification_id: notification.notificationId });

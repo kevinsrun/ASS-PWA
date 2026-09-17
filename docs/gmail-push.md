@@ -19,7 +19,7 @@ gcloud pubsub topics create ass-gmail --project="$ASS_GCP_PROJECT"
 gcloud pubsub topics add-iam-policy-binding ass-gmail --project="$ASS_GCP_PROJECT" --member=serviceAccount:gmail-api-push@system.gserviceaccount.com --role=roles/pubsub.publisher
 gcloud iam service-accounts create ass-gmail-push --project="$ASS_GCP_PROJECT"
 ASS_GCP_NUMBER=$(gcloud projects describe "$ASS_GCP_PROJECT" --format='value(projectNumber)')
-gcloud iam service-accounts add-iam-policy-binding "ass-gmail-push@$ASS_GCP_PROJECT.iam.gserviceaccount.com" --project="$ASS_GCP_PROJECT" --member="serviceAccount:service-$ASS_GCP_NUMBER@gcp-sa-pubsub.iam.gserviceaccount.com" --role=roles/iam.serviceAccountTokenCreator
+gcloud iam service-accounts add-iam-policy-binding "ass-gmail-push@$ASS_GCP_PROJECT.iam.gserviceaccount.com" --project="$ASS_GCP_PROJECT" --member="serviceAccount:service-$ASS_GCP_NUMBER@gcp-sa-pubsub.iam.gserviceaccount.com" --role=roles/iam.serviceAccountOpenIdTokenCreator
 gcloud pubsub subscriptions create ass-gmail-push --project="$ASS_GCP_PROJECT" --topic=ass-gmail --push-endpoint=https://ass-pwa.vercel.app/api/gmail/push --push-auth-service-account="ass-gmail-push@$ASS_GCP_PROJECT.iam.gserviceaccount.com" --push-auth-token-audience=https://ass-pwa.vercel.app/api/gmail/push --ack-deadline=30
 ```
 
@@ -51,8 +51,9 @@ Authorization: Bearer <CRON_SECRET>
 ## Delivery and recovery
 
 Webhook validation checks Google's RS256 signature, issuer, expiration, audience,
-verified service-account email, configured subscription, envelope size and string
-history ID. History IDs are arbitrary-precision strings/numeric values, not JS
+verified service-account email, configured subscription, envelope size and positive
+history ID. String cursors and numeric JSON cursors are normalized to exact decimal
+strings; numeric tokens are read from the original JSON, never from rounded JS
 numbers. The webhook acknowledges **only after durable enqueue**. Unknown or
 disconnected accounts are acknowledged without granting access or creating work.
 
