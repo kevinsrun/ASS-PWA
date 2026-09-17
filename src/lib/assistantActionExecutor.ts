@@ -11,7 +11,7 @@ export type AssistantActionType = typeof assistantActionTypes[number];
 export type AssistantAction = {
   type: AssistantActionType; title?: string; start?: string; end?: string; dueAt?: string;
   category?: string; priority?: PlanPriority; notes?: string; sourceId?: string;
-  canonicalEventId?: string; localId?: number; deleteFromGoogle?: boolean;
+  canonicalEventId?: string; localId?: number; deleteFromGoogle?: boolean; tentative?: boolean;
   taskLocalId?: number; decision?: "going" | "maybe" | "not_going" | "add_to_calendar" | "ignore" | "approve" | "reject";
   emailSuggestionId?: number; googleAccountId?: string; subject?: string; body?: string;
 };
@@ -88,7 +88,7 @@ export async function executeAssistantActions(userId: string, actions: Assistant
         const start = toParts(action.start, timeZone); const end = toParts(action.end, timeZone);
         const supabase = getServiceSupabaseClient()!;
         const { count } = await supabase.from("google_tokens").select("id", { count: "exact", head: true }).eq("user_id", userId);
-        const created = await createCanonicalEvent(userId, { title: action.title, date: start.date, startLabel: start.label, endLabel: end.label, timeZone, recurrence: "none", category: action.type === "create_study_block" ? "school" : categoryMap[action.category ?? "personal"] ?? "personal", priority: action.priority ?? "medium", notes: action.notes ?? "Created from ASS chat", sourceKind: "assistant", sourceId: action.sourceId!, syncToGoogle: Boolean(count) });
+        const created = await createCanonicalEvent(userId, { title: action.title, date: start.date, startLabel: start.label, endLabel: end.label, timeZone, recurrence: "none", category: action.type === "create_study_block" ? "school" : categoryMap[action.category ?? "personal"] ?? "personal", priority: action.priority ?? "medium", notes: action.notes ?? "Created from ASS chat", sourceKind: "assistant", sourceId: action.sourceId!, tentative:Boolean(action.tentative), syncToGoogle: Boolean(count)&&!action.tentative });
         results.push({ type: action.type, success: true, status: "completed", createdObjectId: created.canonicalEventId, errorMessage: created.googleError, summary: `${action.title} was added to the calendar${created.googleSynced ? " and synced to Google" : ""}.`, action });
       } else if (action.type === "create_task") {
         if (!action.title) throw new Error("Task title is required.");

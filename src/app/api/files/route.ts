@@ -76,7 +76,7 @@ export async function GET(request: NextRequest) {
     const textBySource = new Map((texts ?? []).map((row) => [String(row.imported_source_id), row]));
     return NextResponse.json({
       files: (files ?? []).map((file) => ({ ...file, linked_course: file.linked_course_id ? courseById.get(String(file.linked_course_id)) ?? null : null, extraction: extractionByFile.get(String(file.id)) ?? null, items: itemsByFile.get(String(file.id)) ?? [] })),
-      texts: (sources ?? []).map((source) => ({ ...source, title: textBySource.get(String(source.id))?.title ?? "Imported text", extraction: extractionBySource.get(String(source.id)) ?? null, items: itemsBySource.get(String(source.id)) ?? [] })),
+      texts: (sources ?? []).map((source) => ({ ...source, title: textBySource.get(String(source.id))?.title ?? source.file_metadata?.title ?? "Imported text", last_analyzed_at:extractionBySource.get(String(source.id))?.created_at ?? null, extraction: extractionBySource.get(String(source.id)) ?? null, items: itemsBySource.get(String(source.id)) ?? [] })),
     });
   } catch (error) {
     return failure(error);

@@ -8,9 +8,11 @@ import {reanalyzeSource} from "@/lib/documentReanalysis";
 import {executeAssistantActions,type AssistantAction,type AssistantActionResult} from "@/lib/assistantActionExecutor";
 import {createEmailDraft,createAssistantAction} from "@/lib/objectCreation";
 import {getServiceSupabaseClient} from "@/lib/supabaseServer";
+import {permitsInferredAction,type IntentPlan} from "@/lib/intentPlanner";
+import {importTextSource} from "@/lib/sourceAnalysis";
 export type AgentSource={label:string;url:string;kind:"gmail"|"drive"|"document"};
 export type AgentToolResult={success:boolean;data:unknown;error:string|null;metadata:{tool:string;latencyMs:number;sources:AgentSource[];reconnectUrl?:string}};
-export type AgentContext={userId:string;request:string;runId:string;timeZone:string;health:GoogleServiceHealth[];actions:AssistantActionResult[];signal?:AbortSignal;onProgress?:(message:string)=>void};
+export type AgentContext={userId:string;request:string;runId:string;timeZone:string;health:GoogleServiceHealth[];actions:AssistantActionResult[];intentPlan?:IntentPlan;signal?:AbortSignal;onProgress?:(message:string)=>void};
 const str:Schema={type:SchemaType.STRING},num:Schema={type:SchemaType.NUMBER};
 type Definition={name:string;description:string;properties:Record<string,Schema>;required:string[];progress:string};
 const defs:Definition[]=[
@@ -25,7 +27,7 @@ const defs:Definition[]=[
  {name:"writing_context",description:"Retrieve only approved high-confidence user-written samples and learned style. Never trains on arbitrary Drive files.",properties:{query:str},required:[],progress:"Checking your writing style…"},
  {name:"documents_search",description:"Find owned previously imported files/text/Drive documents by title before re-analysis.",properties:{query:str},required:["query"],progress:"Finding your imported document…"},
  {name:"documents_reanalyze",description:"Run latest real extraction again for ONE owned imported fileId OR sourceId. Preserve manual decisions; return changes, never auto-convert.",properties:{fileId:str,sourceId:str},required:[],progress:"Re-analyzing your document…"},
- {name:"documents_extract",description:"Analyze supplied text with existing evidence pipeline. Read-only suggestions; no object creation.",properties:{text:str,title:str},required:["text"],progress:"Analyzing the source…"},
+ {name:"documents_extract",description:"Save supplied text as an imported source and analyze with the shared evidence pipeline. Suggestions only, no calendar/task creation. Results appear in Inbox.",properties:{text:str,title:str},required:["text"],progress:"Analyzing the source…"},
  {name:"calendar_search",description:"Retrieve current commitments including recurrence, priorities and required/optional status. Results are bounded, not proof of free time; executor verifies overlaps.",properties:{query:str,from:str,through:str},required:[],progress:"Checking calendar…"},
  {name:"tasks_search",description:"Retrieve current open tasks and deadlines, optionally matching title.",properties:{query:str},required:[],progress:"Checking your tasks…"},
  {name:"memory_search",description:"Retrieve relevant personal priorities, classification rules, user corrections and memories. Use for decisions and personalization, not facts about new messages.",properties:{query:str},required:[],progress:"Checking your priorities…"},
@@ -68,13 +70,13 @@ export async function executeAgentTool(ctx:AgentContext,name:string,args:Record<
    healthy(ctx,"drive",text(args,"accountId"));const file=await downloadDriveFile(ctx.userId,String(args.accountId),text(args,"fileId",300));const office=file.mimeType.includes("officedocument")?extractOfficeText(file.buffer,file.mimeType):null;
    data={name:file.name,content:file.mimeType.startsWith("text/")?file.buffer.toString("utf8").slice(0,20000):office?.slice(0,20000) ?? await analyzeFile(file,ctx.userId),truncated:true};sources.push({kind:"drive",label:file.name,url:file.metadata.webViewLink ?? `https://drive.google.com/file/d/${file.metadata.id}/view`});
   }else if(name==="gmail_createDraft"){
-   if(!/\b(draft|write|reply|respond|compose)\b/i.test(ctx.request))throw new Error("Ask explicitly for a draft before creating one.");
+   if(ctx.intentPlan?(!permitsInferredAction(ctx.intentPlan,"EMAIL_RESPONSE")&&!permitsInferredAction(ctx.intentPlan,"EMAIL_DRAFT")):!/\b(draft|write|reply|respond|compose)\b/i.test(ctx.request))throw new Error("Please confirm that you want a response draft.");
    healthy(ctx,"gmail",text(args,"accountId"));const recipient=text(args,"recipient",300);if(!/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(recipient))throw new Error("A valid recipient is required");
    if(args.emailSuggestionId){const owned=await resultOf(db().from("email_suggestions").select("id").eq("user_id",ctx.userId).eq("google_account_id",args.accountId).eq("id",args.emailSuggestionId).maybeSingle());if(!owned)throw new Error("Email suggestion not found for this account");}
    data=await createEmailDraft(ctx.userId,{googleAccountId:String(args.accountId),emailSuggestionId:typeof args.emailSuggestionId==="number"?args.emailSuggestionId:null,recipient,subject:text(args,"subject",300),body:text(args,"body",12000),threadId:typeof args.threadId==="string"?args.threadId:null,inReplyToMessageId:typeof args.inReplyToMessageId==="string"?args.inReplyToMessageId:null,context:{runId:ctx.runId,generatedFrom:"chat_agent",sent:false}});sources.push({kind:"document",label:"Draft ready · review in Inbox",url:"/inbox"});
   }else if(name==="documents_reanalyze"){
-   if(!/re.?analy[sz]|analy[sz]e.*again|retry.*analy/i.test(ctx.request))throw new Error("Re-analysis must be requested explicitly");data=await reanalyzeSource(ctx.userId,{fileId:args.fileId as string|undefined,sourceId:args.sourceId as string|undefined});sources.push({kind:"document",label:"Updated analysis · Inbox",url:"/inbox"});
-  }else if(name==="documents_extract")data=await analyzeFile({name:`${typeof args.title==="string"?args.title:"Chat source"}.txt`,mimeType:"text/plain",buffer:Buffer.from(text(args,"text",40000))},ctx.userId);
+   if(ctx.intentPlan?!permitsInferredAction(ctx.intentPlan,"DOCUMENT_REANALYZE"):!/re.?analy[sz]|analy[sz]e.*again|retry.*analy/i.test(ctx.request))throw new Error("Which document should I analyze again?");data=await reanalyzeSource(ctx.userId,{fileId:args.fileId as string|undefined,sourceId:args.sourceId as string|undefined});sources.push({kind:"document",label:"Updated analysis · Inbox",url:"/inbox"});
+  }else if(name==="documents_extract"){data=await importTextSource(ctx.userId,typeof args.title==="string"?args.title:"Chat source",text(args,"text",250000));sources.push({kind:"document",label:"Analysis · review in Inbox",url:"/inbox"});}
   else if(name==="documents_search"){
    const query=text(args,"query",300);data={files:await resultOf(db().from("imported_files").select("id,name,status,classification,last_analyzed_at").eq("user_id",ctx.userId).ilike("name",`%${query}%`).limit(15)),sources:await resultOf(db().from("imported_sources").select("id,source_type,file_metadata,processing_status").eq("user_id",ctx.userId).limit(50))};
   }else if(name==="calendar_search"){
@@ -89,8 +91,10 @@ export async function executeAgentTool(ctx:AgentContext,name:string,args:Record<
    let query=db().from("personal_memory").select("kind,category,statement,confidence,importance").eq("user_id",ctx.userId).eq("active",true);if(args.query)query=query.ilike("statement",`%${text(args,"query",300)}%`);data={memory:await resultOf(query.order("importance",{ascending:false}).limit(12)),rules:await resultOf(db().from("classification_rules").select("*").eq("user_id",ctx.userId).eq("active",true).limit(12)),corrections:await resultOf(db().from("classification_feedback").select("original_text,user_corrected_label,user_action").eq("user_id",ctx.userId).order("created_at",{ascending:false}).limit(12))};
   }else if(name==="assistant_createAction")data=await createAssistantAction(ctx.userId,{sourceKind:"assistant",sourceId:`${ctx.runId}:${name}:${text(args,"title",240)}`,actionType:"review",title:String(args.title),summary:text(args,"summary",2000),payload:{runId:ctx.runId}});
   else if(actionNames[name]){
-   if(!/\b(add|create|schedule|block|put|move|reschedule|update|change|delete|remove|remind)\b/i.test(ctx.request))throw new Error("Calendar/task changes require an explicit user request");
-   const [result]=await executeAssistantActions(ctx.userId,[{...args,type:actionNames[name],sourceId:`agent:${ctx.runId}:${name}:${JSON.stringify(args)}`} as AssistantAction],{timeZone:ctx.timeZone});ctx.actions.push(result);if(!result.success)return {success:false,data:result,error:result.errorMessage ?? result.summary,metadata:{tool:name,latencyMs:Date.now()-started,sources}};data=result;
+   const inferred=name==="calendar_create"?"CALENDAR_CREATE":name==="tasks_create"?"TASK_CREATE":name==="deadlines_create"?"DEADLINE_CREATE":"CALENDAR_MOVE";
+   if(ctx.intentPlan?!permitsInferredAction(ctx.intentPlan,inferred):!/\b(add|create|schedule|block|put|move|reschedule|update|change|delete|remove|remind)\b/i.test(ctx.request))throw new Error("Please confirm the change and identify the exact item.");
+   const tentative=ctx.intentPlan?.attendance==="maybe";
+   const [result]=await executeAssistantActions(ctx.userId,[{...args,tentative,type:actionNames[name],sourceId:`agent:${ctx.runId}:${name}:${JSON.stringify(args)}`} as AssistantAction],{timeZone:ctx.timeZone});ctx.actions.push(result);if(!result.success)return {success:false,data:result,error:result.errorMessage ?? result.summary,metadata:{tool:name,latencyMs:Date.now()-started,sources}};data=result;
   }
   if(JSON.stringify(data)?.length>100000)throw new Error("Too much source content for reliable retrieval. Narrow the search or analyze a smaller section.");
   return {success:true,data,error:null,metadata:{tool:name,latencyMs:Date.now()-started,sources}};

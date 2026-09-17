@@ -265,7 +265,7 @@ export default function InboxPage() {
       <section className="text-import-card" aria-label="Paste text to analyze">
         <div className="text-import-heading"><div><strong>Paste text</strong><small>Notes, schedules, copied email, or your sent-message export</small></div><select aria-label="Text source" value={textSource} onChange={(event) => setTextSource(event.target.value)}><option value="pasted_text">Pasted text</option><option value="manual_text">Manual notes</option><option value="imessage">My sent messages</option></select></div>
         <input aria-label="Import title" value={textTitle} onChange={(event) => setTextTitle(event.target.value)} placeholder="Title (optional)" />
-        <textarea aria-label="Text to analyze" value={textContent} onChange={(event) => setTextContent(event.target.value)} placeholder="Paste content here…" rows={5} />
+        <textarea aria-label="Text to analyze" value={textContent} maxLength={250000} onChange={(event) => {setTextContent(event.target.value);event.target.style.height="auto";event.target.style.height=`${Math.min(480,event.target.scrollHeight)}px`;}} placeholder="Paste content here…" rows={5} />
         <button type="button" disabled={!textContent.trim() || busy === "text-import"} onClick={() => void importText()}>{busy === "text-import" ? <LoaderCircle className="is-spinning" size={17} /> : <Send size={17} />}{busy === "text-import" ? "Analyzing…" : "Analyze"}</button>
         {textSource === "imessage" ? <small>Only paste messages you sent. ASS will not access Messages or scrape its database.</small> : null}
       </section>
