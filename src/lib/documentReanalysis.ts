@@ -17,7 +17,7 @@ export async function reanalyzeSource(userId: string, body: {fileId?: string;sou
     if (body.fileId) {
       const { data: file, error } = await db.from("imported_files").select("*").eq("id",body.fileId).eq("user_id",user.id).single();
       if (error || !file) throw new ApiAuthError("Imported file not found",404);
-      if (file.status === "analyzing" && Date.now() - Date.parse(file.updated_at) < 15 * 60_000) throw new ApiAuthError("This file is already being analyzed",409);
+      if (file.status === "analyzing" && !file.processing_error && Date.now() - Date.parse(file.updated_at) < 15 * 60_000) throw new ApiAuthError("This file is already being analyzed",409);
       fileId = file.id; sourceId = file.imported_source_id;
       version = file.updated_at;
       lease = {table:"imported_files",id:file.id,userId:user.id,field:"status",previous:file.status};
@@ -25,7 +25,7 @@ export async function reanalyzeSource(userId: string, body: {fileId?: string;sou
     } else {
       const { data: source, error } = await db.from("imported_sources").select("*").eq("id",sourceId).eq("user_id",user.id).single();
       if (error || !source) throw new ApiAuthError("Imported source not found",404);
-      if (source.processing_status === "analyzing" && Date.now() - Date.parse(source.updated_at) < 15 * 60_000) throw new ApiAuthError("This source is already being analyzed",409);
+      if (source.processing_status === "analyzing" && !source.processing_error && Date.now() - Date.parse(source.updated_at) < 15 * 60_000) throw new ApiAuthError("This source is already being analyzed",409);
       version = source.updated_at;
       lease = {table:"imported_sources",id:source.id,userId:user.id,field:"processing_status",previous:source.processing_status};
       if (source.source_type === "google_drive") {
