@@ -297,14 +297,14 @@ export default function InboxPage() {
 
       {emailItems.length ? (
         <section className="inbox-section">
-          <div className="inbox-section-title"><span>Email intelligence & attention</span><small>{emailItems.length}</small></div>
+          <div className="inbox-section-title"><span>What needs your attention</span><small>{emailItems.length}</small></div>
           <div className="decision-list">
             {emailItems.map((item) => {
               const isEvent = eventTypes.has(item.type);
               return (
                 <article key={item.id} className={item.conflictDetails.length ? "has-conflict" : ""}>
                   <div className="decision-copy">
-                    <small>{item.accountEmail} · {human(item.type)}</small>
+                    <small>{item.accountEmail} · {item.responseNeeded ? "Things to answer" : isEvent ? "Things you may want to attend" : item.actionRequired ? "Things to do" : "Important information"}</small>
                     <h2>{item.title}</h2>
                     <p>{item.conflictDetails.length ? `Conflicts with ${item.conflictDetails.join(", ")}.` : item.summary}</p>
                     {item.recommendations[0] ? <em>{item.recommendations[0]}</em> : null}
@@ -326,6 +326,7 @@ export default function InboxPage() {
           </div>
         </section>
       ) : null}
+      <Link href="/automation">Email permissions, activity, and filtered messages</Link>
 
       {pushStatus ? <details className="inbox-section"><summary>Email delivery · {pushStatus.configured ? "Push configured" : "Scheduled fallback · push setup required"}</summary>{pushStatus.watches.map(watch=><article key={watch.google_account_id}><strong>{driveAccounts.find(account=>account.id===watch.google_account_id)?.email ?? "Connected Gmail account"}</strong><p>Watch: {watch.watch_expiration ? new Date(watch.watch_expiration).getTime()>Date.now() ? `Expires ${new Date(watch.watch_expiration).toLocaleString()}` : "Expired — maintenance will retry" : "Not registered"}</p><p>Last push: {watch.last_successful_push ? new Date(watch.last_successful_push).toLocaleString() : "Not received"} · Last processed: {watch.last_successful_sync ? new Date(watch.last_successful_sync).toLocaleString() : "Not yet"}</p>{watch.last_error ? <p role="alert">{watch.last_error}</p> : null}</article>)}<Link href="/debug/sync">View automation diagnostics</Link></details> : null}
 

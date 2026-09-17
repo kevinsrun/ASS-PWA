@@ -75,6 +75,11 @@ export default function ProfilePage() {
       </section>
 
       <section className="settings-section">
+        <h2>Automation</h2>
+        <div className="settings-group"><Link href="/automation" className="settings-row settings-row--link"><div><strong>Permissions and activity</strong><span>Email filtering, mark-as-read, and automation history</span></div><ChevronRight size={17} aria-hidden="true" /></Link></div>
+      </section>
+
+      <section className="settings-section">
         <h2>ASS account</h2>
         <div className="settings-group"><div className="settings-row"><div><strong>Signed in as</strong><span>{user?.email ?? "Not signed in"}</span></div>{user ? <button type="button" disabled={loggingOut} onClick={() => void logout()}><LogOut size={18} aria-hidden="true" />{loggingOut ? "Signing out…" : "Log out"}</button> : <Link href="/login">Sign in</Link>}</div><div className="settings-row"><span>ASS login is separate from the Google service connections below.</span></div></div>
       </section>

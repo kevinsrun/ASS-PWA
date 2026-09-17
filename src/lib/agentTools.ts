@@ -10,12 +10,18 @@ import {createEmailDraft,createAssistantAction} from "@/lib/objectCreation";
 import {getServiceSupabaseClient} from "@/lib/supabaseServer";
 import {permitsInferredAction,type IntentPlan} from "@/lib/intentPlanner";
 import {importTextSource} from "@/lib/sourceAnalysis";
+import { weatherDecisionContext } from "@/lib/weatherContext";
+import { getAutomationSettings, canModifyGmail } from "@/lib/automationSettings";
+import { listGoogleAccounts } from "@/lib/googleAuth";
 export type AgentSource={label:string;url:string;kind:"gmail"|"drive"|"document"};
 export type AgentToolResult={success:boolean;data:unknown;error:string|null;metadata:{tool:string;latencyMs:number;sources:AgentSource[];reconnectUrl?:string}};
 export type AgentContext={userId:string;request:string;runId:string;timeZone:string;health:GoogleServiceHealth[];actions:AssistantActionResult[];intentPlan?:IntentPlan;signal?:AbortSignal;onProgress?:(message:string)=>void};
 const str:Schema={type:SchemaType.STRING},num:Schema={type:SchemaType.NUMBER};
 type Definition={name:string;description:string;properties:Record<string,Schema>;required:string[];progress:string};
 const defs:Definition[]=[
+ {name:"capabilities_status",description:"Read the actual modular tool registry, connected-service availability and automation permissions. Unavailable web/forms/browser capabilities must never be fabricated.",properties:{},required:[],progress:"Checking available capabilities…"},
+ {name:"finance_summary",description:"Read owned stored finance accounts, recent transactions, institution sync status and planning assumptions. Read-only; never transfers money or claims live bank access. Show synchronization timestamps and errors.",properties:{},required:[],progress:"Checking stored finance data…"},
+ {name:"weather_context",description:"Use the existing weather risk service for an outdoor/travel event within the next seven days. Return a risk note; null does not prove good weather. Does not move calendar events.",properties:{title:str,date:str,time:str},required:["title","date"],progress:"Checking weather context…"},
  {name:"gmail_search",description:"Search real Gmail using Gmail search syntax. accountId is an owned connected account; omit to search all healthy accounts. Use domain/email in the query when needed.",properties:{query:str,accountId:str},required:["query"],progress:"Searching Gmail…"},
  {name:"gmail_recent",description:"Get recent real Gmail messages, optionally from a particular connected account.",properties:{accountId:str},required:[],progress:"Reading recent email…"},
  {name:"gmail_read",description:"Read a real email thread from a connected account. Use IDs returned by Gmail search.",properties:{accountId:str,threadId:str},required:["accountId","threadId"],progress:"Reading email thread…"},
@@ -37,6 +43,14 @@ const defs:Definition[]=[
 const actionNames:Record<string,AssistantAction["type"]>={calendar_create:"create_calendar_event",calendar_update:"update_calendar_event",calendar_delete:"delete_calendar_event",calendar_move:"move_event",tasks_create:"create_task",tasks_update:"reschedule_task",deadlines_create:"create_deadline",calendar_study:"create_study_block"};
 for(const [name,type]of Object.entries(actionNames))defs.push({name,description:`Execute ${type} using the existing conflict-aware action service. Only when explicitly requested by the user. Updates/moves/deletes require confirmation; never send email or execute financial actions. Exact IDs required for existing objects. ISO dates need explicit timezone offset.`,properties:{title:str,start:str,end:str,dueAt:str,canonicalEventId:str,localId:num,taskLocalId:num,priority:{...str,format:"enum",enum:["low","medium","high"]},category:str,notes:str,deleteFromGoogle:{type:SchemaType.BOOLEAN}},required:[],progress:"Checking and applying your calendar/task request…"});
 export const agentToolDefinitions:FunctionDeclaration[]=defs.map(({name,description,properties,required})=>({name,description,parameters:{type:SchemaType.OBJECT,properties,required}}));
+// Gemini function names use underscores; capability metadata exposes stable
+// dotted namespaces without building a competing tool implementation.
+export const agentToolRegistry = new Map(defs.map(definition=>[definition.name,{...definition,namespace:definition.name.replace("_",".")} ]));
+export async function getAgentCapabilitySnapshot(ctx: Pick<AgentContext,"userId"|"health">) {
+ const [settings,accounts,institutions]=await Promise.all([getAutomationSettings(ctx.userId),listGoogleAccounts(ctx.userId),resultOf(db().from("plaid_items").select("id,status,last_successful_sync_at,error_code,error_message").eq("user_id",ctx.userId))]);
+ const connected=(service:"gmail"|"drive"|"calendar")=>ctx.health.some(account=>account[service].state==="connected");
+ return {tools:[...agentToolRegistry.values()].map(tool=>({name:tool.name,namespace:tool.namespace,description:tool.description})),services:{gmail:{available:connected("gmail"),accounts:accounts.map(account=>({id:account.id,email:account.connected_email,canModify:canModifyGmail(account.scope ? String(account.scope):null)}))},calendar:{available:true,googleConnected:connected("calendar"),note:"Local ASS calendar is available; Google account health is checked separately."},drive:{available:connected("drive")},documents:{available:true},tasks:{available:true},finance:{available:true,note:"Owned stored records, not guaranteed live bank access.",institutions},weather:{available:true,note:"Event risk context; API errors are returned by the tool."},web:{available:false,reason:"No web-search tool is configured."},forms:{available:false,reason:"Controlled form extraction and review workflow is not implemented."},events:{available:false,reason:"External opportunity discovery is not implemented."},browser:{available:false,reason:"No app-controlled browser tool is configured."}},permissions:{...settings,automatic_send:false,automatic_form_submission:false,automatic_external_event_deletion:false}};
+}
 function text(args:Record<string,unknown>,key:string,max=1000){const value=args[key];if(typeof value!=="string"||!value.trim()||value.length>max)throw new Error(`A valid ${key} is required`);return value.trim();}
 function db(){const client=getServiceSupabaseClient();if(!client)throw new Error("ASS Cloud is not configured");return client;}
 async function resultOf(query:PromiseLike<{data:unknown;error:unknown}>){const result=await query;if(result.error)throw result.error;return result.data;}
@@ -50,15 +64,24 @@ function healthy(ctx:AgentContext,service:"gmail"|"drive",accountId?:string){
 }
 export async function agentCapabilities(userId:string){return verifyGoogleServices(userId,undefined,true);}
 export async function executeAgentTool(ctx:AgentContext,name:string,args:Record<string,unknown>):Promise<AgentToolResult>{
- const started=Date.now(),sources:AgentSource[]=[];ctx.onProgress?.(defs.find(d=>d.name===name)?.progress ?? "Checking the request…");
+ const started=Date.now(),sources:AgentSource[]=[];ctx.onProgress?.(agentToolRegistry.get(name)?.progress ?? "Checking the request…");
  try{
   if(ctx.signal?.aborted)throw new Error("Request cancelled");
-  const definition=defs.find(d=>d.name===name);if(!definition)throw new Error("Unsupported tool");
+  const definition=agentToolRegistry.get(name);if(!definition)throw new Error("Unsupported tool");
   for(const key of definition.required)if(args[key]===undefined)throw new Error(`Missing ${key}`);
   for(const [key,value]of Object.entries(args)){const schema=definition.properties[key];if(!schema)throw new Error(`Unexpected field ${key}`);if(schema.type===SchemaType.STRING&&typeof value!=="string"||schema.type===SchemaType.NUMBER&&(typeof value!=="number"||!Number.isFinite(value))||schema.type===SchemaType.BOOLEAN&&typeof value!=="boolean")throw new Error(`Invalid ${key}`);}
   let data:unknown;
   const accountId=typeof args.accountId==="string"?args.accountId:undefined;
-  if(name==="gmail_search"||name==="gmail_recent"){
+  if(name==="capabilities_status") data=await getAgentCapabilitySnapshot(ctx);
+  else if(name==="finance_summary") {
+   const [accounts,transactions,institutions,assumptions]=await Promise.all([resultOf(db().from("finance_accounts").select("id,name,type,subtype,current_balance,available_balance,updated_at").eq("user_id",ctx.userId).eq("hidden",false)),resultOf(db().from("finance_transactions").select("id,name,merchant_name,amount,occurred_on,pending,category").eq("user_id",ctx.userId).is("removed_at",null).order("occurred_on",{ascending:false}).limit(30)),resultOf(db().from("plaid_items").select("institution_name,status,last_successful_sync_at,error_code,error_message").eq("user_id",ctx.userId)),resultOf(db().from("finance_assumptions").select("*").eq("user_id",ctx.userId).maybeSingle())]);
+   data={accounts,transactions,institutions,assumptions,readOnly:true};sources.push({kind:"document",label:"Stored finance records · check last sync",url:"/finance"});
+  } else if(name==="weather_context") {
+   const date=text(args,"date",10);if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new Error("Use a source-verified event date in YYYY-MM-DD format");
+   const time=typeof args.time==="string"?args.time:null;if(time&&!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))throw new Error("Use HH:MM for event time");
+   data={riskNote:await weatherDecisionContext(ctx.userId,{title:text(args,"title",240),date,time}),note:"No note is not proof of good weather; this service only flags eligible near-term outdoor/travel risks."};
+   sources.push({kind:"document",label:"National Weather Service",url:"https://www.weather.gov/"});
+  } else if(name==="gmail_search"||name==="gmail_recent"){
    const query=name==="gmail_recent"?"newer_than:7d":text(args,"query",500);
    data=await Promise.all(healthy(ctx,"gmail",accountId).map(async account=>{const emails=await searchGmailEmails(ctx.userId,account.id,query);for(const email of emails){email.url=`https://mail.google.com/mail/u/?authuser=${encodeURIComponent(account.email)}#all/${email.threadId ?? email.id}`;sources.push({kind:"gmail",label:`${account.email} — ${email.subject}`,url:email.url});}return {accountId:account.id,accountEmail:account.email,messages:emails};}));
   }else if(name==="gmail_read"){
@@ -85,7 +108,7 @@ export async function executeAgentTool(ctx:AgentContext,name:string,args:Record<
   }else if(name==="tasks_search"){
    let query=db().from("todos").select("*").eq("user_id",ctx.userId).eq("done",false);if(args.query)query=query.ilike("title",`%${text(args,"query",300)}%`);data=await resultOf(query.limit(50));
   }else if(name==="gmail_actionable"){
-   data=await resultOf(db().from("email_suggestions").select("id,google_account_id,title,summary,sender,thread_id,response_needed,response_confidence,response_reason,automation_labels,action_required,date,time,confidence").eq("user_id",ctx.userId).eq("status","pending").or("response_needed.eq.true,action_required.eq.true").limit(20));
+   data=await resultOf(db().from("email_suggestions").select("id,google_account_id,title,summary,sender,thread_id,response_needed,response_confidence,response_reason,automation_labels,action_required,date,time,confidence").eq("user_id",ctx.userId).eq("status","pending").eq("suppressed",false).or("response_needed.eq.true,action_required.eq.true").limit(20));
   }else if(name==="gmail_drafts"){
    data=await resultOf(db().from("email_drafts").select("id,google_account_id,thread_id,recipient,subject,body,status,gmail_draft_id,created_at").eq("user_id",ctx.userId).in("status",["ready","edited"]).order("created_at",{ascending:false}).limit(20));
   }else if(name==="writing_context"){

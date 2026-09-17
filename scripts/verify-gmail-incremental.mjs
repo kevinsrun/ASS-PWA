@@ -8,6 +8,7 @@ let cursorWrites = [], ids = ['removed', 'live'], invalid = false;
 class Query {
   constructor(table) { this.table = table; }
   select() { return this; } eq() { return this; } in() { return this; }
+  or() { return this; }
   order() { return this; } limit() { return this; } gte() { return this; }
   lte() { return this; } neq() { return this; } is() { return this; }
   maybeSingle() { return Promise.resolve({data:null,error:null}); }

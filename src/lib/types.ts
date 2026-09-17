@@ -90,6 +90,8 @@ export type GoogleAccountSummary = {
 };
 
 export type EmailIntelligenceItem = {
+  disposition?: string;
+  responseNeeded?: boolean;
   id: string;
   accountEmail: string;
   sender: string;

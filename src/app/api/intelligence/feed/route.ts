@@ -22,9 +22,10 @@ export async function GET(request: NextRequest) {
     const [{ data, error }, accounts, alerts, actionQueue] = await Promise.all([
       supabase
         .from("email_suggestions")
-        .select("id,google_account_id,sender,title,summary,intelligence_type,importance,action_required,date,time,conflict_details,recommendations,received_at")
+        .select("id,google_account_id,sender,title,summary,intelligence_type,importance,action_required,date,time,conflict_details,recommendations,received_at,disposition,response_needed")
         .eq("user_id", user.id)
         .eq("status", "pending")
+        .eq("suppressed", false)
         .neq("intelligence_type", "no_action")
         .order("received_at", { ascending: false })
         .limit(8),
@@ -40,6 +41,8 @@ export async function GET(request: NextRequest) {
       (accounts.data ?? []).map((account) => [String(account.id), String(account.connected_email ?? "Google account")])
     );
     const items: EmailIntelligenceItem[] = (data ?? []).map((item) => ({
+      disposition: item.disposition ?? undefined,
+      responseNeeded: Boolean(item.response_needed),
       id: String(item.id),
       accountEmail: emailByAccount.get(String(item.google_account_id)) ?? "Google account",
       sender: String(item.sender ?? ""),

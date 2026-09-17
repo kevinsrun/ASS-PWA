@@ -10,6 +10,10 @@ import { calendarLocalIso } from "@/lib/academicSchedule";
 import { SchemaType, type Schema } from "@google/generative-ai";
 import { emailClassificationExamples, draftGenerationRules, priorityRankingRules } from "@/lib/intelligencePrompts";
 import { validateExtractedItem } from "@/lib/classificationGuardrails";
+import { emailDisposition } from "@/lib/emailDisposition";
+import { getAutomationSettings } from "@/lib/automationSettings";
+import { flushProcessedGmailLabels } from "@/lib/gmailLabelAutomation";
+import { unsubscribeObviousJunk } from "@/lib/emailUnsubscribe";
 
 type GmailMessageList = { messages?: Array<{ id: string; threadId?: string }> };
 type GmailPart = { mimeType?: string; body?: { data?: string }; parts?: GmailPart[]; headers?: Array<{name:string;value:string}> };
@@ -378,6 +382,7 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
     (account) => !onlyAccountId || String(account.id) === onlyAccountId
   );
   const context = await contextForUser(userId);
+  const automation = await getAutomationSettings(userId);
   const all: EmailIntelligenceItem[] = [];
   const failures: string[] = [];
   let emailsScanned = 0;
@@ -388,16 +393,20 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
 
   for (const account of accounts) {
     const accountId = String(account.id);
+    let processingIds: string[] = [];
     try {
       await supabase.from("google_tokens").update({ email_sync_status: "syncing", email_sync_error: null }).eq("id", accountId).eq("user_id", userId);
       const accessToken = await getGoogleAccessToken(userId, accountId);
+      await flushProcessedGmailLabels(userId, accountId, accessToken, account.scope ? String(account.scope) : null, automation);
       const incremental = await incrementalMessageIds(accessToken, account.gmail_history_id ? String(account.gmail_history_id) : null);
       // Label/deletion changes update state without rerunning inference or
       // destroying user-reviewed calendar objects/drafts.
       await applyMailboxChanges(userId,accountId,incremental.changes);
       const { data: unfinished, error: unfinishedError } = await supabase.from("email_messages").select("google_message_id,email_extractions!inner(status)").eq("user_id", userId).eq("google_account_id", accountId).in("email_extractions.status", ["classified", "failed"]).limit(10);
       if (unfinishedError) throw unfinishedError;
-      const ids = forceMessageId ? [forceMessageId] : [...new Set([...incremental.ids, ...(unfinished ?? []).map((message) => String(message.google_message_id))])];
+      const { data: processingRetry, error: retryError } = await supabase.from("email_messages").select("google_message_id").eq("user_id",userId).eq("google_account_id",accountId).in("processing_status",["processing","failed"]).order("updated_at",{ascending:true}).limit(10);
+      if(retryError) throw retryError;
+      const ids = forceMessageId ? [forceMessageId] : [...new Set([...(processingRetry ?? []).map(message=>String(message.google_message_id)), ...incremental.ids, ...(unfinished ?? []).map((message) => String(message.google_message_id))])];
       const existing: Array<{ external_id: string; status: string }> = [];
       const removedIds = new Set<string>();
       for (let index = 0; index < ids.length; index += 200) {
@@ -411,7 +420,7 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
         existing.push(...suggestions.data ?? []);
         for (const row of removed.data ?? []) removedIds.add(String(row.google_message_id));
       }
-      const unfinishedIds = new Set((unfinished ?? []).map((message) => String(message.google_message_id)));
+      const unfinishedIds = new Set([...(unfinished ?? []), ...(processingRetry ?? [])].map((message) => String(message.google_message_id)));
       if(forceMessageId) {
         const {data:feedback,error}=await supabase.from("classification_feedback").select("id").eq("user_id",userId).eq("source_type","email").in("source_id",existing.map(row=>String((row as {id?:unknown}).id ?? ""))).limit(1);
         if(error) throw error;
@@ -430,11 +439,19 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
         if (removedExtractionError) throw removedExtractionError;
       }
       emailsScanned += messages.length;
+      processingIds = messages.map(message=>message.id);
+      if(messages.length) {
+        const {error:processingError}=await supabase.from("email_messages").upsert(messages.map(message=>({user_id:userId,google_account_id:accountId,google_message_id:message.id,received_at:message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null,processing_status:"processing",processing_error:null,updated_at:new Date().toISOString()})),{onConflict:"user_id,google_account_id,google_message_id"});
+        if(processingError) throw processingError;
+      }
       const classifications = await classify(messages, context.prompt);
       const byId = new Map(classifications.map((item) => [item.id, item]));
       const processedAt = new Date().toISOString();
+      const dispositions = new Map<string, ReturnType<typeof emailDisposition>>();
       const rows = await Promise.all(messages.map(async (message) => {
         const item = safeClassification(message, byId.get(message.id));
+        const disposition = emailDisposition({sender:header(message,"From"),subject:header(message,"Subject"),text:messageText(message),headers:Object.fromEntries((message.payload?.headers ?? []).map(header=>[header.name,header.value])),type:item.type,importance:item.importance,actionRequired:item.actionRequired,responseNeeded:item.responseNeeded},automation.mode);
+        dispositions.set(message.id,disposition);
         let analysis = { conflicts: [] as string[], recommendations: item.recommendations ?? [] };
         if (item.date && item.time && ["meeting", "club_event", "interview", "travel"].includes(item.type)) {
           const zone = String(account.calendar_time_zone ?? "America/New_York");
@@ -457,6 +474,7 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
           response_needed: item.responseNeeded, response_confidence:item.responseConfidence, response_reason:item.responseReason, suggested_reply:"",
           automation_labels: item.type==="no_action" ? [cheapEmailFilter(message) ? "IGNORE" : "INFORMATIONAL"] : [...(item.date && ["deadline","financial_aid","invoice","scholarship"].includes(item.type) ? ["DEADLINE"] : []), ...(["meeting","club_event","interview","travel"].includes(item.type) ? [item.confirmedAttendance ? "CALENDAR_EVENT" : "OPTIONAL_EVENT"] : [item.actionRequired ? "TASK" : "INFORMATIONAL"]), ...(/\b(?:form|certification|documents?)\b/i.test(item.evidence_text) && item.actionRequired ? ["REQUIRED_FORM"] : []), ...(["scholarship","research"].includes(item.type) ? ["OPPORTUNITY"] : []), ...(item.responseNeeded ? ["RESPONSE_NEEDED","DRAFT_NEEDED"] : [])],
           conflict_details: analysis.conflicts, recommendations: analysis.recommendations,
+          disposition:disposition.disposition, suppressed:disposition.suppressed,
           processed_at: processedAt, status: item.type === "no_action" ? "dismissed" : "pending",
         };
       }));
@@ -471,8 +489,12 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
           subject: header(message, "Subject"),
           snippet: message.snippet ?? "",
           received_at: message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null,
-          raw_headers: Object.fromEntries((message.payload?.headers ?? []).map((item) => [item.name, item.value])),
+          raw_headers: Object.fromEntries([...(message.payload?.headers ?? [])].reverse().map((item) => [item.name.toLowerCase(), item.value])),
           label_ids:message.labelIds ?? [],
+          disposition: rows.find(row=>row.external_id===message.id)?.disposition,
+          disposition_reason: dispositions.get(message.id)?.reason,
+          protected_sender: dispositions.get(message.id)?.protectedSender ?? true,
+          disposition_confidence: dispositions.get(message.id)?.confidence ?? 0,
           updated_at: processedAt,
         })), { onConflict: "user_id,google_account_id,google_message_id" }).select("id,google_message_id");
         if (messageError) throw messageError;
@@ -491,7 +513,7 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
           if (extractionError) throw extractionError;
         }
         for (const row of savedSuggestions ?? []) {
-          if (row.response_needed && Number(row.response_confidence) >= 0.9) {
+          if (automation.create_reply_drafts && row.response_needed && Number(row.response_confidence) >= 0.9 && !rows.find(item=>item.external_id===row.external_id)?.suppressed) {
             const {data:existingDraft,error:draftError}=await supabase.from("email_drafts").select("id").eq("user_id",userId).eq("email_suggestion_id",row.id).maybeSingle();
             if(draftError) throw draftError;
             if(existingDraft) continue;
@@ -508,7 +530,7 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
             await createAssistantAction(userId,{sourceKind:"gmail",sourceId:`${accountId}:${row.external_id}`,actionType:"draft_ready",title:`Draft ready: ${header(sourceMessage,"Subject")}`,summary:"Review the reply in Inbox. Nothing has been sent.",payload:{draftId:draft.id,googleAccountId:accountId,emailSuggestionId:row.id}});
           }
         }
-        const emailActions = (savedSuggestions ?? []).filter((row) => row.intelligence_type !== "no_action").map((row) => ({
+        const emailActions = (savedSuggestions ?? []).filter((row) => row.intelligence_type !== "no_action" && !rows.find(item=>item.external_id===row.external_id)?.suppressed).map((row) => ({
           user_id: userId,
           email_suggestion_id: row.id,
           action_type: ["meeting", "club_event", "interview", "travel"].includes(String(row.intelligence_type)) ? "event_decision" : "review",
@@ -523,15 +545,15 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
           const { error: actionError } = await supabase.from("email_action_items").upsert(emailActions, { onConflict: "user_id,email_suggestion_id" });
           if (actionError) throw actionError;
         }
-        const actionable = rows.filter((row) => row.intelligence_type !== "no_action");
+        const actionable = rows.filter((row) => row.intelligence_type !== "no_action" && !row.suppressed);
         const taskTypes = new Set(["task", "deadline", "reminder", "financial_aid", "invoice", "scholarship", "research", "project_update"]);
         for (const row of actionable) {
           const sourceId = `${accountId}:${row.external_id}`;
           const priority = row.importance === "urgent" || row.importance === "high" ? "high" as const : "medium" as const;
-          if (row.action_required && row.confidence >= 0.9 && row.date && ["deadline","financial_aid","invoice","scholarship"].includes(row.intelligence_type) && /\b(?:due|deadline|by|before)\b/i.test(byId.get(row.external_id)?.evidence_text ?? "")) {
+          if (automation.create_deadlines && row.action_required && row.confidence >= 0.9 && row.date && ["deadline","financial_aid","invoice","scholarship"].includes(row.intelligence_type) && /\b(?:due|deadline|by|before)\b/i.test(byId.get(row.external_id)?.evidence_text ?? "")) {
             const deadline = await createDeadline(userId, { sourceKind: "gmail", sourceId, title: row.title, dueAt: `${row.date}T${row.time ?? "00:00"}:00`, priority, notes: row.summary, googleAccountId: accountId, syncToGoogle: false });
             if (!deadline.event.duplicate) calendarEventsCreated += 1;
-          } else if (row.action_required && row.confidence >= 0.9 && taskTypes.has(row.intelligence_type) && /\b(?:required|must|mandatory|due|deadline)\b/i.test(byId.get(row.external_id)?.evidence_text ?? "")) {
+          } else if ((automation.create_deadlines || !["deadline","financial_aid","invoice","scholarship"].includes(row.intelligence_type)) && row.action_required && row.confidence >= 0.9 && taskTypes.has(row.intelligence_type) && /\b(?:required|must|mandatory|due|deadline)\b/i.test(byId.get(row.external_id)?.evidence_text ?? "")) {
             await createTask(userId, { sourceKind: "gmail", sourceId, title: row.title, dueDate: row.date, priority, duration: row.duration, tags: [row.intelligence_type, "email", String(account.connected_email ?? "google")] });
           }
           const eventLike = ["meeting", "club_event", "interview", "travel"].includes(row.intelligence_type);
@@ -557,7 +579,11 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
         }
         const { error: registeredError } = await supabase.from("email_extractions").update({ status: "created", updated_at: processedAt }).eq("user_id", userId).in("email_message_id", [...messageIdByExternalId.values()]).neq("status", "ignored");
         if (registeredError) throw registeredError;
+        const {error:completedError}=await supabase.from("email_messages").update({processing_status:"processed",processed_at:new Date().toISOString(),processing_error:null}).eq("user_id",userId).eq("google_account_id",accountId).in("google_message_id",processingIds);
+        if(completedError) throw completedError;
       }
+      await flushProcessedGmailLabels(userId,accountId,accessToken,account.scope ? String(account.scope) : null,automation);
+      await unsubscribeObviousJunk(userId,accountId,automation);
       const backlogRemaining = pendingIds.length > batchIds.length;
       hasBacklog ||= backlogRemaining;
       const cursor = forceMessageId || backlogRemaining ? account.gmail_history_id ?? null : incremental.newestHistoryId;
@@ -567,6 +593,10 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown Gmail failure";
       failures.push(`${accountId.slice(0, 8)}: ${message}`);
+      if(processingIds.length) {
+        const {error:retryStoreError}=await supabase.from("email_messages").update({processing_status:"failed",processing_error:message,updated_at:new Date().toISOString()}).eq("user_id",userId).eq("google_account_id",accountId).in("google_message_id",processingIds).neq("processing_status","processed");
+        if(retryStoreError) console.error(JSON.stringify({service:"gmail-intelligence",stage:"retry-state-persistence-failed",error:retryStoreError.message}));
+      }
       await supabase.from("google_tokens").update({ email_sync_status: "error", email_sync_error: message, updated_at: new Date().toISOString() }).eq("id", accountId).eq("user_id", userId);
       console.error(JSON.stringify({ service: "gmail-intelligence", runId, account: accountId.slice(0, 8), stage: "failed", message }));
     }
