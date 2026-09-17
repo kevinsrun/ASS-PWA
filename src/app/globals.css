@@ -974,11 +974,13 @@ body {
 .inbox-page input,.inbox-page textarea,.inbox-page select{background:var(--surface-secondary);color:var(--text-primary);border:1px solid var(--border-subtle);opacity:1}
 .inbox-page input::placeholder,.inbox-page textarea::placeholder{color:var(--text-muted);opacity:1}
 .inbox-page textarea{white-space:pre-wrap;line-height:1.55;min-height:9rem;max-height:30rem;overflow:auto}
-.inbox-page button,.inbox-page summary{color:var(--text-primary)}
+.inbox-page summary{color:var(--text-primary)}
 .inbox-page button:disabled{opacity:1;background:var(--surface-secondary);color:var(--text-muted);cursor:not-allowed}
-.inbox-page button:not(:disabled):hover,.inbox-page summary:hover{background:var(--surface-elevated);box-shadow:inset 0 0 0 1px var(--border-strong)}
+.inbox-page button:not(:disabled):hover{box-shadow:inset 0 0 0 1px var(--border-strong)}
+.inbox-page summary:hover{background:var(--surface-elevated);box-shadow:inset 0 0 0 1px var(--border-strong)}
 .inbox-page :is(button,summary,input,textarea,select,a):focus-visible{outline:2px solid var(--action-primary);outline-offset:3px}
 .inbox-page .convert-button,.inbox-page .text-import-card>button{background:var(--text-primary);color:var(--surface-primary)}
 .inbox-page .text-import-card>button:disabled{background:var(--surface-secondary);color:var(--text-muted)}
+.inbox-page .convert-button:disabled{background:var(--surface-secondary);color:var(--text-muted)}
 .inbox-page .extraction-item time,.inbox-page .extraction-item small,.inbox-page .analysis-counts,.inbox-page .file-card-heading p,.inbox-page .extraction-description{color:var(--text-secondary);opacity:1}
 .inbox-page .file-failure,.inbox-page .inbox-error{color:var(--status-danger)}
