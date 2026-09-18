@@ -6,6 +6,6 @@ const {collectCorrection}=load('@/lib/ai/training');
 const input={sourceType:'email',sourceId:'source',originalText:'Synthetic application deadline',predictedLabel:'reference',correctedLabel:'task',confidence:0.5,userAction:'approve'};
 await collectCorrection('owner',input);assert.equal(writes.length,0,'disabled by default');
 enabled=true;await collectCorrection('owner',input);assert.equal(writes.length,1);assert.equal(writes[0].row.quality,'needs_review');assert.equal(writes[0].row.correction_source,'USER_CORRECTION');assert.equal(writes[0].row.user_id,'owner');assert(writes[0].options.ignoreDuplicates);
-await collectCorrection('owner',{...input,correctedLabel:null});await collectCorrection('owner',{...input,correctedLabel:'going'});assert.equal(writes.length,1,'unlabeled or RSVP examples excluded');
+await collectCorrection('owner',{...input,correctedLabel:null});await collectCorrection('owner',{...input,correctedLabel:'going'});await collectCorrection('owner',{...input,sourceType:'email_draft'});assert.equal(writes.length,1,'unlabeled, RSVP and generated-draft examples excluded');
 outage=true;await collectCorrection('owner',input);assert.equal(writes.length,1,'collection unavailable does not break user action');
 console.log('Training fixtures passed: explicit opt-in, owner scoping, review gate, provenance, duplicate preservation, unlabeled/RSVP exclusion, storage failure isolation. Mocked storage; no model training.');

@@ -4,6 +4,8 @@ import {getServiceSupabaseClient} from '@/lib/supabaseServer';
 // Candidates only: a correction is not automatically a reviewed training label.
 export async function collectCorrection(userId:string,input:{sourceType:string;sourceId:string;originalText?:string;predictedLabel?:string|null;confidence?:number|null;correctedLabel?:string|null;userAction:string}){
  if(!input.correctedLabel?.trim()||!input.originalText?.trim())return;
+ // Draft feedback contains generated draft text, not incoming-mail evidence.
+ if(!['email','file'].includes(input.sourceType))return;
  // RSVP preferences are not document/email classification ground truth.
  if(['going','not_going','maybe'].includes(input.correctedLabel))return;
  try{
