@@ -153,6 +153,7 @@ export async function discoverOpportunities(userId: string) {
           user_id: userId,
           source_key: source.key,
           last_attempt_at: attemptedAt,
+          last_success_at: state.data?.last_success_at ?? null,
           error_message: message,
         });
       if (saved.error) errors.push(saved.error.message);
