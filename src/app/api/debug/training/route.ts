@@ -1,0 +1,31 @@
+import {NextRequest,NextResponse} from 'next/server';
+import {requireApiUser,ApiAuthError} from '@/lib/serverAuth';
+import {getServiceSupabaseClient} from '@/lib/supabaseServer';
+export const runtime='nodejs';
+const headers={'Cache-Control':'no-store'};
+export async function GET(request:NextRequest){try{
+ const user=await requireApiUser(request),db=getServiceSupabaseClient();if(!db)throw Error();
+ const params=request.nextUrl.searchParams;
+ if(params.get('export')==='jsonl'){
+  const confidence=Number(params.get('confidence')??0);
+  if(!Number.isFinite(confidence)||confidence<0||confidence>1)return NextResponse.json({error:'Confidence must be between 0 and 1'},{status:400});
+  let query=db.from('model_training_examples').select('task_type,input_text,final_label,correction_source,model_confidence,created_at').eq('user_id',user.id).eq('quality','approved');
+  for(const [param,column] of [['task','task_type'],['source','correction_source']] as const){const value=params.get(param);if(value)query=query.eq(column,value);}
+  if(params.has('confidence'))query=query.gte('model_confidence',confidence);
+  for(const [param,operator] of [['from','gte'],['through','lte']] as const){const value=params.get(param);if(value){const date=new Date(value);if(!Number.isFinite(date.getTime()))return NextResponse.json({error:'Invalid date filter'},{status:400});query=query[operator]('created_at',date.toISOString());}}
+  const result=await query.order('created_at').order('id').limit(1001);if(result.error)throw result.error;
+  if((result.data?.length??0)>1000)return NextResponse.json({error:'Narrow the date range to at most 1,000 examples; export was not truncated.'},{status:413});
+  return new Response((result.data??[]).map(row=>JSON.stringify({task:row.task_type,input:row.input_text,output:row.final_label,provenance:row.correction_source,confidence:row.model_confidence})).join('\n')+((result.data?.length??0)?'\n':''),{headers:{...headers,'Content-Type':'application/x-ndjson','Content-Disposition':'attachment; filename="ass-training.jsonl"'}});
+ }
+ const [preference,examples]=await Promise.all([db.from('model_training_preferences').select('enabled').eq('user_id',user.id).maybeSingle(),db.from('model_training_examples').select('id,task_type,input_text,final_label,correction_source,quality,created_at').eq('user_id',user.id).order('created_at',{ascending:false}).limit(50)]);
+ if(preference.error||examples.error)throw Error();return NextResponse.json({enabled:preference.data?.enabled??false,examples:examples.data??[]}, {headers});
+ }catch(error){return NextResponse.json({error:error instanceof ApiAuthError?error.message:'Training data unavailable'},{status:error instanceof ApiAuthError?error.status:500,headers});}}
+export async function POST(request:NextRequest){try{
+ const user=await requireApiUser(request),db=getServiceSupabaseClient();if(!db)throw Error();const body=await request.json();
+ if(typeof body.enabled==='boolean'){
+  const result=await db.from('model_training_preferences').upsert({user_id:user.id,enabled:body.enabled,updated_at:new Date().toISOString()});if(result.error)throw result.error;
+ }else if(typeof body.id==='string'&&['approved','rejected'].includes(body.quality)){
+  const result=await db.from('model_training_examples').update({quality:body.quality}).eq('user_id',user.id).eq('id',body.id).select('id');if(result.error)throw result.error;if(!result.data?.length)return NextResponse.json({error:'Example not found'},{status:404});
+ }else return NextResponse.json({error:'Invalid request'},{status:400});
+ return NextResponse.json({ok:true},{headers});
+ }catch(error){return NextResponse.json({error:error instanceof ApiAuthError?error.message:'Training data update failed'},{status:error instanceof ApiAuthError?error.status:500,headers});}}

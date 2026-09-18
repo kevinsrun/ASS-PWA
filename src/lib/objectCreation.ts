@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { collectCorrection } from "@/lib/ai/training";
 import {
   createCalendarEvent,
   type CalendarEventInput,
@@ -605,6 +606,7 @@ export async function recordClassificationFeedback(
     throw new Error(
       `Classification feedback registration failed: ${error.message}`,
     );
+  await collectCorrection(userId, input);
   const corrected =
     input.correctedLabel ??
     (input.userAction === "reject" ||

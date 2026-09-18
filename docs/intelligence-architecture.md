@@ -50,10 +50,10 @@ Vercel localhost is not the development Mac. Keep local inference disabled there
 ## Remaining phased work
 
 3. Implemented: owner-isolated persistent cache for completed document analysis and accepted local email triage; content/task/model/prompt/analysis versions in keys. Document cache also fingerprints correction/rule/course context and the analysis day. Failed/unknown/escalated results are never cached. Explicit document/email re-analysis bypasses cached results. Cache expiry is seven days (logical validity, not an automatic physical-retention cleanup job). Existing Gmail processed-source storage still prevents normal reclassification. Usage records track actual attempts, including fallbacks, in document and Gmail-classification scopes. Profile → AI Usage shows UTC-day counters and explicitly excludes uninstrumented chat/agent calls. Cache reuse is shown rather than inventing token/cost or batched Gemini call savings. No historical counters are fabricated. Cross-instance duplicate upload analysis is still governed by existing source leases; this cache does not introduce a new distributed lock.
-4. Consent-aware corrections/training example collection, quality filters and JSONL export. User corrections outrank verified and pseudo labels; never live-train Ollama.
+4. First increment implemented: opt-in future explicit correction collection, owner review/approval, confidence/task/provenance/date filtering and bounded JSONL export. See `docs/model-training.md`. No automatic training, historical import, teacher labeling or synthetic generation is implemented; those remain separate reviewed work.
 5–6. Shared PDF services/templates and Adobe adapter with server-side credentials and basic PDF fallback.
 7–10. Native SwiftUI authentication/skeleton, shared mobile APIs/screens, QR/forms preview/approval, APNs. Core processing stays server-side.
 
-These later phases are not implemented by this commit. Native iOS, PDF output, durable usage metrics, training exports, and Gemini request reductions have not been claimed as verified.
+Phases 5–10 are not implemented by this commit. Native iOS, PDF output, teacher labeling, synthetic generation, model fine-tuning, and Gemini request reductions have not been claimed as verified.
 
 Primary references: [Ollama Generate API](https://docs.ollama.com/api/generate), [Gemma 3 1B tag](https://ollama.com/library/gemma3:1b).

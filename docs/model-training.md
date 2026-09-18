@@ -1,0 +1,17 @@
+# Training dataset collection — phase 4, first increment
+
+Profile → AI Usage → `/debug/training` manages an owner's dataset. Collection is off by default and must be explicitly enabled. Only future explicit corrections from existing authenticated file/email review and response-needed workflows are collected. No historical backfill, raw Gmail ingestion, document dump, prompts, credentials, or automatic teacher calls. Input is existing feedback evidence (up to 50,000 characters), not necessarily the full source document. RSVP decisions are excluded. Repeated identical corrections retain review decisions through owner-scoped hashes.
+
+Candidates start `needs_review`; an explicit owner approval is required before export. Rejection excludes the example. Confidence is the original model's self-reported confidence, not calibrated correctness. USER_CORRECTION identifies user-reviewed feedback, not proof of objective truth. Context is deliberately limited to source category and action; source identifiers and arbitrary context are omitted from export. Text can still contain personal information; review/redact before sharing. Disabling collection stops future collection, not existing retention. No physical purge or automatic retention job is introduced.
+
+Authenticated API: `/api/debug/training`. JSONL export `?export=jsonl` supports `task`, `source` (including USER_CORRECTION/GEMINI_VERIFIED), optional confidence minimum, and ISO `from`/`through` dates. Only the authenticated owner's approved records are returned. Exports above 1,000 records fail explicitly; narrow the date range rather than silently truncating. The page lists the latest 50 candidates. UI dates are local wall time; pass an explicit ISO timezone for exact API boundaries.
+
+All storage is server-only with RLS enabled and browser grants revoked. Existing correction functionality remains authoritative if dataset collection fails. No model trains live and no data is automatically uploaded to another service.
+
+## Offline workflow (not implemented training)
+
+Keep a versioned dataset manifest with source/prompt/model versions and a SHA256 of the reviewed export. Split train/validation/test by source/thread/document, never randomly by overlapping snippets; deduplicate across splits. User corrections outrank independently verified labels. Gemini labels alone remain GEMINI_PSEUDO_LABEL, not GEMINI_VERIFIED; require an independent reviewer and deterministic grounding validation. Teacher and synthetic generation are deferred to a separate reviewed increment, not claimed as implemented here.
+
+Evaluate a Gemma base model, then optionally train a LoRA/QLoRA adapter offline using the base model's official training guidance. Track email triage, reference, task/deadline/calendar detection, response-needed and academic schedule precision/recall/F1; prioritize deadline recall and event false positives. Retain a held-out challenge set with historical dates, optional events, applications, office hours, newsletters/opportunities and duplicates. Review privacy and the base model license before training or export. Training loss alone cannot approve deployment.
+
+After quality gates pass, test a compatible merged/exported model with Ollama, version as ASS-Gemma-v1/v2, and benchmark latency/memory, accuracy and escalation. Packaging depends on the selected model and current tool support; no unverified conversion command is prescribed. Rollout is explicit and reversible, retaining Gemini escalation and existing deterministic safety checks.
