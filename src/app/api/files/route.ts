@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { GEMINI_MODELS } from "@/lib/geminiModels";
 import { analyzeFile } from "@/lib/fileIntelligence";
 import { indexDocument } from "@/lib/documentGrounding";
 import { fulfillDocumentActions } from "@/lib/documentFulfillment";
@@ -342,7 +343,7 @@ export async function POST(request: NextRequest) {
         user_id: user.id,
         imported_file_id: fileId,
         imported_source_id: importedSourceId,
-        model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+        model: GEMINI_MODELS.reasoning,
         classification: analysis.classification,
         confidence: analysis.confidence,
         summary: analysis.summary,

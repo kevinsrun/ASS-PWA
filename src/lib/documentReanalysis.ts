@@ -1,4 +1,5 @@
 import { analyzeFile } from "@/lib/fileIntelligence";
+import { GEMINI_MODELS } from "@/lib/geminiModels";
 import { planReanalysisMerge } from "@/lib/reanalysisMerge";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import { ApiAuthError } from "@/lib/serverAuth";
@@ -155,7 +156,7 @@ export async function reanalyzeSource(
         user_id: user.id,
         imported_file_id: fileId,
         imported_source_id: sourceId,
-        model: process.env.GEMINI_MODEL ?? "gemini-3.8-flash",
+        model: GEMINI_MODELS.reasoning,
         classification: analysis.classification,
         confidence: analysis.confidence,
         summary: analysis.summary,

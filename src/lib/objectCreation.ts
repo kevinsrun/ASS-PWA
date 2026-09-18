@@ -232,7 +232,7 @@ export async function createRecurringAcademicEvent(
   return { ...event, academicRecurringEventId: String(data.id) };
 }
 
-export async function createTask(
+export async function createCanonicalTask(
   userId: string,
   input: {
     sourceKind: string;
@@ -242,9 +242,13 @@ export async function createTask(
     priority?: "low" | "medium" | "high";
     duration?: number;
     tags?: string[];
+    description?: string;
+    dueAt?: string | null;
+    localId?: number;
   },
 ) {
-  const localId = stableLocalId(input.sourceKind, input.sourceId);
+  const localId =
+    input.localId ?? stableLocalId(input.sourceKind, input.sourceId);
   const { error } = await client()
     .from("todos")
     .upsert(
@@ -252,6 +256,10 @@ export async function createTask(
         user_id: userId,
         local_id: localId,
         title: input.title,
+        description: input.description ?? "",
+        due_at: input.dueAt ?? null,
+        source_type: input.sourceKind,
+        source_id: input.sourceId,
         done: false,
         priority: input.priority ?? "medium",
         duration: input.duration ?? 60,
@@ -276,6 +284,50 @@ export async function createTask(
   return { localId };
 }
 
+export const createTask = createCanonicalTask;
+export async function updateCanonicalTask(
+  userId: string,
+  localId: number,
+  updates: {
+    title?: string;
+    description?: string;
+    status?: "TODO" | "IN_PROGRESS" | "WAITING" | "COMPLETED" | "IGNORED";
+    due_at?: string | null;
+    start_after?: string | null;
+    due_date?: string | null;
+    priority?: "low" | "medium" | "high";
+    duration?: number;
+    tags?: string[];
+    recurrence?: string;
+    subtasks?: Array<{ id: number; title: string; done: boolean }>;
+  },
+) {
+  const { data, error } = await client()
+    .from("todos")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .eq("local_id", localId)
+    .is("deleted_at", null)
+    .select("local_id")
+    .single();
+  if (error || !data) throw new Error("Task update failed");
+  return data;
+}
+export async function completeCanonicalTask(userId: string, localId: number) {
+  return updateCanonicalTask(userId, localId, { status: "COMPLETED" });
+}
+export async function deleteCanonicalTask(userId: string, localId: number) {
+  const { error } = await client()
+    .from("todos")
+    .update({
+      deleted_at: new Date().toISOString(),
+      status: "IGNORED",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", userId)
+    .eq("local_id", localId);
+  if (error) throw error;
+}
 export async function createDeadline(
   userId: string,
   input: {
@@ -312,6 +364,8 @@ export async function createDeadline(
     sourceId: `${input.sourceId}:task`,
     title: input.title,
     dueDate: date,
+    dueAt: due.toISOString(),
+    description: input.notes ?? "",
     priority: input.priority,
     tags: ["deadline", input.sourceKind],
   });

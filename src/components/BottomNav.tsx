@@ -8,7 +8,7 @@ const items = [
   { href: "/", label: "Home", icon: Home },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/inbox", label: "Inbox", icon: Inbox },
-  { href: "/todos", label: "Projects", icon: Rows3 },
+  { href: "/todos", label: "Tasks", icon: Rows3 },
   { href: "/finance", label: "Finance", icon: WalletCards },
   { href: "/chat", label: "Chat", icon: MessageCircle },
 ];

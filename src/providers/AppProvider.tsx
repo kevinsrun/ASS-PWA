@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useState,
+  useRef,
   Dispatch,
   ReactNode,
   SetStateAction,
@@ -23,6 +24,7 @@ import {
   cloudSnapshotHasData,
   loadCloudSnapshot,
   saveCloudSnapshot,
+  deleteCloudTodo,
 } from "@/lib/supabaseData";
 import { useAuth } from "@/providers/AuthProvider";
 import {
@@ -50,16 +52,25 @@ type AppContextType = {
     title: string,
     priority?: "low" | "medium" | "high",
     duration?: number,
-    dueDate?: string | null
+    dueDate?: string | null,
   ) => void;
   toggleTodo: (id: number) => void;
   deleteTodo: (id: number) => void;
-  addHabit: (name: string, details?: Partial<Omit<Habit, "id" | "name">>) => void;
+  addHabit: (
+    name: string,
+    details?: Partial<Omit<Habit, "id" | "name">>,
+  ) => void;
   toggleHabit: (id: number) => void;
   deleteHabit: (id: number) => void;
-  addJournal: (content: string, details?: Partial<Omit<JournalEntry, "id" | "content">>) => void;
+  addJournal: (
+    content: string,
+    details?: Partial<Omit<JournalEntry, "id" | "content">>,
+  ) => void;
   deleteJournal: (id: number) => void;
-  updateJournal: (id: number, updates: Partial<Omit<JournalEntry, "id">>) => void;
+  updateJournal: (
+    id: number,
+    updates: Partial<Omit<JournalEntry, "id">>,
+  ) => void;
   plans: SavedPlan[];
   chatMessages: ChatMessage[];
   codingWorkflows: CodingWorkflow[];
@@ -68,11 +79,25 @@ type AppContextType = {
   calendarActionError: string | null;
   reloadCloud: () => Promise<void>;
   addPlan: (plan: Omit<SavedPlan, "id">) => void;
-  createPlan: (plan: Omit<SavedPlan, "id">, source?: { kind?: "manual" | "task" | "habit" | "project" | "assistant"; id?: string }) => Promise<{ ok: boolean; error?: string; googleError?: string | null }>;
-  deletePlan: (id: number, options?: { deleteFromGoogle?: boolean }) => Promise<{ ok: boolean; error?: string }>;
+  createPlan: (
+    plan: Omit<SavedPlan, "id">,
+    source?: {
+      kind?: "manual" | "task" | "habit" | "project" | "assistant";
+      id?: string;
+    },
+  ) => Promise<{ ok: boolean; error?: string; googleError?: string | null }>;
+  deletePlan: (
+    id: number,
+    options?: { deleteFromGoogle?: boolean },
+  ) => Promise<{ ok: boolean; error?: string }>;
   setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>;
-  addCodingWorkflow: (workflow: Omit<CodingWorkflow, "id" | "createdAt">) => void;
-  updateCodingWorkflow: (id: number, updates: Partial<Omit<CodingWorkflow, "id">>) => void;
+  addCodingWorkflow: (
+    workflow: Omit<CodingWorkflow, "id" | "createdAt">,
+  ) => void;
+  updateCodingWorkflow: (
+    id: number,
+    updates: Partial<Omit<CodingWorkflow, "id">>,
+  ) => void;
   deleteCodingWorkflow: (id: number) => void;
   updateProfile: (updates: Partial<ProfileSettings>) => void;
   updateTodo: (id: number, updates: Partial<Omit<Todo, "id">>) => void;
@@ -101,8 +126,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   });
   const [hydrated, setHydrated] = useState(false);
   const [cloudReady, setCloudReady] = useState(false);
+  const persistedTodos = useRef(new Map<number, string>());
   const [syncStatus, setSyncStatus] = useState("Local only");
-  const [calendarActionError, setCalendarActionError] = useState<string | null>(null);
+  const [calendarActionError, setCalendarActionError] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     setTodos(loadTodos());
@@ -131,6 +159,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
 
         if (cloudSnapshotHasData(cloud)) {
+          persistedTodos.current = new Map(
+            cloud.todos.map((todo) => [todo.id, JSON.stringify(todo)]),
+          );
           setTodos(cloud.todos);
           setHabits(cloud.habits);
           setJournals(cloud.journals);
@@ -158,8 +189,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  // Run once per authenticated user after local hydration.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Run once per authenticated user after local hydration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, user?.id]);
 
   useEffect(() => {
@@ -194,14 +225,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!user || !cloudReady) return;
 
     const timeout = window.setTimeout(() => {
+      const changedTodos = todos.filter(
+        (todo) => persistedTodos.current.get(todo.id) !== JSON.stringify(todo),
+      );
       saveCloudSnapshot(user.id, {
-        todos,
+        todos: changedTodos,
         habits,
         journals,
         plans,
         profile,
       })
-        .then(() => setSyncStatus("Synced to Supabase"))
+        .then(() => {
+          for (const todo of changedTodos)
+            persistedTodos.current.set(todo.id, JSON.stringify(todo));
+          setSyncStatus("Synced to Supabase");
+        })
         .catch((error) => {
           console.error("Supabase save failed:", error);
           setSyncStatus("Cloud sync failed");
@@ -215,15 +253,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
     title: string,
     priority: "low" | "medium" | "high" = "medium",
     duration: number = 60,
-    dueDate: string | null = null
+    dueDate: string | null = null,
   ) {
     const trimmed = title.trim();
     if (!trimmed) return;
+    const localId = Date.now();
+    if (session?.access_token && cloudReady) {
+      void fetch("/api/tasks", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "create",
+          localId,
+          title: trimmed,
+          priority,
+          duration,
+          dueDate,
+        }),
+      })
+        .then(async (response) => {
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.error);
+          await reloadCloud();
+        })
+        .catch((error) => {
+          console.error("Task creation failed", error);
+          setSyncStatus("Task creation failed; try again");
+        });
+      return;
+    }
 
     setTodos((prev) => [
       ...prev,
       {
-        id: Date.now(),
+        id: localId,
         title: trimmed,
         done: false,
         priority,
@@ -234,18 +300,76 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   function toggleTodo(id: number) {
+    if (session?.access_token && cloudReady) {
+      const task = todos.find((todo) => todo.id === id);
+      if (!task) return;
+      void fetch("/api/tasks", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "update",
+          localId: id,
+          status: task.done ? "TODO" : "COMPLETED",
+        }),
+      })
+        .then(async (response) => {
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.error);
+          await reloadCloud();
+        })
+        .catch((error) => {
+          console.error("Task completion failed", error);
+          setSyncStatus("Task completion failed; try again");
+        });
+      return;
+    }
     setTodos((prev) =>
       prev.map((todo) =>
-        todo.id === id ? { ...todo, done: !todo.done } : todo
-      )
+        todo.id === id ? { ...todo, done: !todo.done } : todo,
+      ),
     );
   }
 
   function deleteTodo(id: number) {
+    if (session?.access_token && cloudReady) {
+      void fetch("/api/tasks", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ action: "delete", localId: id }),
+      })
+        .then(async (response) => {
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.error);
+          await reloadCloud();
+        })
+        .catch((error) => {
+          console.error("Task deletion failed", error);
+          setSyncStatus("Task deletion failed; try again");
+        });
+      return;
+    }
+    if (user && cloudReady) {
+      void deleteCloudTodo(user.id, id)
+        .then(() => setTodos((prev) => prev.filter((todo) => todo.id !== id)))
+        .catch((error) => {
+          console.error("Task deletion failed", error);
+          setSyncStatus("Task deletion failed; try again");
+        });
+      return;
+    }
     setTodos((prev) => prev.filter((todo) => todo.id !== id));
   }
 
-  function addHabit(name: string, details: Partial<Omit<Habit, "id" | "name">> = {}) {
+  function addHabit(
+    name: string,
+    details: Partial<Omit<Habit, "id" | "name">> = {},
+  ) {
     const trimmed = name.trim();
     if (!trimmed) return;
 
@@ -289,10 +413,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           lastCompleted: today,
           streak: newStreak,
           completionHistory: Array.from(
-            new Set([...(habit.completionHistory ?? []), today])
+            new Set([...(habit.completionHistory ?? []), today]),
           ),
         };
-      })
+      }),
     );
   }
 
@@ -300,7 +424,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setHabits((prev) => prev.filter((habit) => habit.id !== id));
   }
 
-  function addJournal(content: string, details: Partial<Omit<JournalEntry, "id" | "content">> = {}) {
+  function addJournal(
+    content: string,
+    details: Partial<Omit<JournalEntry, "id" | "content">> = {},
+  ) {
     const trimmed = content.trim();
     if (!trimmed) return;
 
@@ -322,18 +449,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setJournals((prev) => prev.filter((journal) => journal.id !== id));
   }
 
-  function updateJournal(id: number, updates: Partial<Omit<JournalEntry, "id">>) {
+  function updateJournal(
+    id: number,
+    updates: Partial<Omit<JournalEntry, "id">>,
+  ) {
     setJournals((prev) =>
       prev.map((journal) =>
-        journal.id === id ? { ...journal, ...updates } : journal
-      )
+        journal.id === id ? { ...journal, ...updates } : journal,
+      ),
     );
   }
 
   async function syncCalendarChange(
     method: "POST" | "PATCH" | "DELETE",
     plan: SavedPlan,
-    source?: { kind?: "manual" | "task" | "habit" | "project" | "assistant"; id?: string; deleteFromGoogle?: boolean }
+    source?: {
+      kind?: "manual" | "task" | "habit" | "project" | "assistant";
+      id?: string;
+      deleteFromGoogle?: boolean;
+    },
   ) {
     if (!session?.access_token) return { ok: true, localOnly: true };
     setCalendarActionError(null);
@@ -354,10 +488,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 localId: plan.id,
                 deleteFromGoogle: Boolean(source?.deleteFromGoogle),
               }
-            : { ...plan, sourceKind: source?.kind ?? "manual", sourceId: source?.id ?? String(plan.id), syncToGoogle: profile.gmailConnected }
+            : {
+                ...plan,
+                sourceKind: source?.kind ?? "manual",
+                sourceId: source?.id ?? String(plan.id),
+                syncToGoogle: profile.gmailConnected,
+              },
         ),
       });
-      const body = (await response.json().catch(() => ({}))) as { error?: string; googleError?: string | null };
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        googleError?: string | null;
+      };
       if (!response.ok) {
         throw new Error(body.error ?? "Google Calendar could not be updated.");
       }
@@ -365,19 +507,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return { ok: true, ...body };
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Google Calendar could not be updated.";
+        error instanceof Error
+          ? error.message
+          : "Google Calendar could not be updated.";
       console.error("Google Calendar mutation failed:", message);
       setCalendarActionError(message);
       return { ok: false, error: message };
     }
   }
 
-  async function createPlan(plan: Omit<SavedPlan, "id">, source?: { kind?: "manual" | "task" | "habit" | "project" | "assistant"; id?: string }) {
+  async function createPlan(
+    plan: Omit<SavedPlan, "id">,
+    source?: {
+      kind?: "manual" | "task" | "habit" | "project" | "assistant";
+      id?: string;
+    },
+  ) {
     const nextPlan = { id: Date.now(), ...plan };
     setPlans((prev) => [...prev, nextPlan]);
     if (plan.source !== "google") {
       const result = await syncCalendarChange("POST", nextPlan, source);
-      if (!result.ok) setPlans((current) => current.filter((candidate) => candidate.id !== nextPlan.id));
+      if (!result.ok)
+        setPlans((current) =>
+          current.filter((candidate) => candidate.id !== nextPlan.id),
+        );
       return result;
     }
     return { ok: true };
@@ -387,16 +540,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void createPlan(plan);
   }
 
-  async function deletePlan(id: number, options?: { deleteFromGoogle?: boolean }) {
+  async function deletePlan(
+    id: number,
+    options?: { deleteFromGoogle?: boolean },
+  ) {
     const plan = plans.find((candidate) => candidate.id === id);
     if (!plan) return { ok: false, error: "Calendar event was not found." };
-    if (!session?.access_token) { setPlans((prev) => prev.filter((candidate) => candidate.id !== id)); return { ok: true }; }
-    const result = await syncCalendarChange("DELETE", plan, { deleteFromGoogle: options?.deleteFromGoogle });
-    if (result.ok) setPlans((prev) => prev.filter((candidate) => candidate.id !== id));
+    if (!session?.access_token) {
+      setPlans((prev) => prev.filter((candidate) => candidate.id !== id));
+      return { ok: true };
+    }
+    const result = await syncCalendarChange("DELETE", plan, {
+      deleteFromGoogle: options?.deleteFromGoogle,
+    });
+    if (result.ok)
+      setPlans((prev) => prev.filter((candidate) => candidate.id !== id));
     return result;
   }
 
-  function addCodingWorkflow(workflow: Omit<CodingWorkflow, "id" | "createdAt">) {
+  function addCodingWorkflow(
+    workflow: Omit<CodingWorkflow, "id" | "createdAt">,
+  ) {
     setCodingWorkflows((prev) => [
       {
         id: Date.now(),
@@ -409,19 +573,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   function updateCodingWorkflow(
     id: number,
-    updates: Partial<Omit<CodingWorkflow, "id">>
+    updates: Partial<Omit<CodingWorkflow, "id">>,
   ) {
     setCodingWorkflows((prev) =>
       prev.map((workflow) =>
-        workflow.id === id ? { ...workflow, ...updates } : workflow
-      )
+        workflow.id === id ? { ...workflow, ...updates } : workflow,
+      ),
     );
   }
 
   function deleteCodingWorkflow(id: number) {
-    setCodingWorkflows((prev) =>
-      prev.filter((workflow) => workflow.id !== id)
-    );
+    setCodingWorkflows((prev) => prev.filter((workflow) => workflow.id !== id));
   }
 
   function updateProfile(updates: Partial<ProfileSettings>) {
@@ -429,23 +591,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   function updateTodo(id: number, updates: Partial<Omit<Todo, "id">>) {
+    if (session?.access_token && cloudReady) {
+      void fetch("/api/tasks", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ action: "update", localId: id, ...updates }),
+      })
+        .then(async (response) => {
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.error);
+          await reloadCloud();
+        })
+        .catch((error) => {
+          console.error("Task update failed", error);
+          setSyncStatus("Task update failed; try again");
+        });
+      return;
+    }
     setTodos((prev) =>
-      prev.map((todo) => (todo.id === id ? { ...todo, ...updates } : todo))
+      prev.map((todo) => (todo.id === id ? { ...todo, ...updates } : todo)),
     );
   }
 
   function updateHabit(id: number, updates: Partial<Omit<Habit, "id">>) {
     setHabits((prev) =>
-      prev.map((habit) => (habit.id === id ? { ...habit, ...updates } : habit))
+      prev.map((habit) => (habit.id === id ? { ...habit, ...updates } : habit)),
     );
   }
 
   function updatePlan(id: number, updates: Partial<Omit<SavedPlan, "id">>) {
     const plan = plans.find((candidate) => candidate.id === id);
     setPlans((prev) =>
-      prev.map((plan) => (plan.id === id ? { ...plan, ...updates } : plan))
+      prev.map((plan) => (plan.id === id ? { ...plan, ...updates } : plan)),
     );
-    if (plan?.source === "google" && plan.googleCalendarId && plan.googleEventId) {
+    if (
+      plan?.source === "google" &&
+      plan.googleCalendarId &&
+      plan.googleEventId
+    ) {
       void syncCalendarChange("PATCH", { ...plan, ...updates });
     }
   }
@@ -455,6 +641,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSyncStatus("Refreshing cloud data...");
     try {
       const cloud = await loadCloudSnapshot(user.id);
+      persistedTodos.current = new Map(
+        cloud.todos.map((todo) => [todo.id, JSON.stringify(todo)]),
+      );
       setTodos(cloud.todos);
       setHabits(cloud.habits);
       setJournals(cloud.journals);
@@ -469,36 +658,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const value = {
-      todos,
-      habits,
-      journals,
-      addTodo,
-      toggleTodo,
-      deleteTodo,
-      addHabit,
-      toggleHabit,
-      deleteHabit,
-      addJournal,
-      deleteJournal,
-      updateJournal,
-      plans,
-      chatMessages,
-      codingWorkflows,
-      profile,
-      syncStatus,
-      calendarActionError,
-      reloadCloud,
-      addPlan,
-      createPlan,
-      deletePlan,
-      setChatMessages,
-      addCodingWorkflow,
-      updateCodingWorkflow,
-      deleteCodingWorkflow,
-      updateProfile,
-      updateTodo,
-      updateHabit,
-      updatePlan,
+    todos,
+    habits,
+    journals,
+    addTodo,
+    toggleTodo,
+    deleteTodo,
+    addHabit,
+    toggleHabit,
+    deleteHabit,
+    addJournal,
+    deleteJournal,
+    updateJournal,
+    plans,
+    chatMessages,
+    codingWorkflows,
+    profile,
+    syncStatus,
+    calendarActionError,
+    reloadCloud,
+    addPlan,
+    createPlan,
+    deletePlan,
+    setChatMessages,
+    addCodingWorkflow,
+    updateCodingWorkflow,
+    deleteCodingWorkflow,
+    updateProfile,
+    updateTodo,
+    updateHabit,
+    updatePlan,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { GEMINI_MODELS } from "@/lib/geminiModels";
 import { analyzeFile } from "@/lib/fileIntelligence";
 import { indexDocument } from "@/lib/documentGrounding";
 import { fulfillDocumentActions } from "@/lib/documentFulfillment";
@@ -86,7 +87,7 @@ export async function ingestDriveFile(
       .insert({
         user_id: userId,
         imported_source_id: sourceId,
-        model: process.env.GEMINI_MODEL ?? "gemini-3.8-flash",
+        model: GEMINI_MODELS.reasoning,
         classification: analysis.classification,
         confidence: analysis.confidence,
         summary: analysis.summary,

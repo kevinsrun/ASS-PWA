@@ -36,6 +36,11 @@ type ProfileRow = {
 };
 
 type TodoRow = {
+  description?: string;
+  status?: Todo["status"];
+  due_at?: string | null;
+  start_after?: string | null;
+  google_sync_error?: string | null;
   local_id?: number | string | null;
   title?: string | null;
   done?: boolean | null;
@@ -115,7 +120,9 @@ export function cloudSnapshotHasData(snapshot: CloudSnapshot) {
   return hasCoreData(snapshot);
 }
 
-export async function loadCloudSnapshot(userId: string): Promise<CloudSnapshot> {
+export async function loadCloudSnapshot(
+  userId: string,
+): Promise<CloudSnapshot> {
   const supabase = getBrowserSupabaseClient();
   if (!supabase) {
     return { todos: [], habits: [], journals: [], plans: [], profile: null };
@@ -123,7 +130,13 @@ export async function loadCloudSnapshot(userId: string): Promise<CloudSnapshot> 
 
   const [profile, todos, habits, journals, plans] = await Promise.all([
     supabase.from("profiles").select("*").eq("user_id", userId).maybeSingle(),
-    supabase.from("todos").select("*").eq("user_id", userId).order("local_id"),
+    supabase
+      .from("todos")
+      .select("*")
+      .eq("user_id", userId)
+      .is("deleted_at", null)
+      .neq("status", "IGNORED")
+      .order("local_id"),
     supabase.from("habits").select("*").eq("user_id", userId).order("local_id"),
     supabase
       .from("journal_entries")
@@ -133,7 +146,7 @@ export async function loadCloudSnapshot(userId: string): Promise<CloudSnapshot> 
     supabase.from("plans").select("*").eq("user_id", userId).order("date"),
   ]);
   const queryError = [profile, todos, habits, journals, plans].find(
-    (result) => result.error
+    (result) => result.error,
   )?.error;
   if (queryError) {
     throw new Error(`Supabase load failed: ${queryError.message}`);
@@ -157,68 +170,79 @@ export async function loadCloudSnapshot(userId: string): Promise<CloudSnapshot> 
         }
       : null,
     todos: todoRows.map((todo) => ({
-        id: Number(todo.local_id),
-        title: todo.title ?? "",
-        done: Boolean(todo.done),
-        priority: todo.priority ?? "medium",
-        duration: Number(todo.duration ?? 60),
-        dueDate: todo.due_date ?? null,
-        tags: todo.tags ?? [],
-        recurrence: todo.recurrence ?? "none",
-        subtasks: todo.subtasks ?? [],
-      })),
+      id: Number(todo.local_id),
+      title: todo.title ?? "",
+      done: Boolean(todo.done),
+      priority: todo.priority ?? "medium",
+      duration: Number(todo.duration ?? 60),
+      dueDate: todo.due_date ?? null,
+      description: todo.description ?? "",
+      status: todo.status ?? (todo.done ? "COMPLETED" : "TODO"),
+      dueAt: todo.due_at ?? null,
+      startAfter: todo.start_after ?? null,
+      googleSyncError: todo.google_sync_error ?? null,
+      tags: todo.tags ?? [],
+      recurrence: todo.recurrence ?? "none",
+      subtasks: todo.subtasks ?? [],
+    })),
     habits: habitRows.map((habit) => ({
-        id: Number(habit.local_id),
-        name: habit.name ?? "",
-        lastCompleted: habit.last_completed ?? null,
-        streak: Number(habit.streak ?? 0),
-        category: habit.category ?? "personal",
-        frequency: habit.frequency ?? "daily",
-        timePreference: habit.time_preference ?? "anytime",
-        notes: habit.notes ?? "",
-        skipDays: habit.skip_days ?? [],
-        completionHistory: habit.completion_history ?? [],
-      })),
+      id: Number(habit.local_id),
+      name: habit.name ?? "",
+      lastCompleted: habit.last_completed ?? null,
+      streak: Number(habit.streak ?? 0),
+      category: habit.category ?? "personal",
+      frequency: habit.frequency ?? "daily",
+      timePreference: habit.time_preference ?? "anytime",
+      notes: habit.notes ?? "",
+      skipDays: habit.skip_days ?? [],
+      completionHistory: habit.completion_history ?? [],
+    })),
     journals: journalRows.map((journal) => ({
-        id: Number(journal.local_id),
-        date: journal.date ?? new Date().toISOString().split("T")[0],
-        content: journal.content ?? "",
-        mood: journal.mood ?? "",
-        energy: Number(journal.energy ?? 3),
-        themes: journal.themes ?? [],
-        locked: Boolean(journal.locked),
-      })),
+      id: Number(journal.local_id),
+      date: journal.date ?? new Date().toISOString().split("T")[0],
+      content: journal.content ?? "",
+      mood: journal.mood ?? "",
+      energy: Number(journal.energy ?? 3),
+      themes: journal.themes ?? [],
+      locked: Boolean(journal.locked),
+    })),
     plans: planRows.map((plan) => ({
-        id: Number(plan.local_id),
-        title: plan.title ?? "",
-        date: plan.date ?? new Date().toISOString().split("T")[0],
-        startLabel: plan.start_label ?? "9:00 AM",
-        endLabel: plan.end_label ?? "10:00 AM",
-        recurrence: plan.recurrence ?? "none",
-        category: plan.category ?? "other",
-        priority: plan.priority ?? "medium",
-        notes: plan.notes ?? "",
-        customRecurrence: plan.custom_recurrence ?? "",
-        seriesId: plan.series_id ?? undefined,
-        excludedDates: plan.excluded_dates ?? [],
-        source: plan.source ?? "ass",
-        googleEventId: plan.google_event_id ?? undefined,
-        googleAccountId: plan.google_account_id ?? undefined,
-        googleCalendarId: plan.google_calendar_id ?? undefined,
-        googleRecurringEventId: plan.google_recurring_event_id ?? undefined,
-        googleColor: plan.google_color ?? undefined,
-        googleEtag: plan.google_etag ?? undefined,
-        googleUpdatedAt: plan.google_updated_at ?? undefined,
-        allDay: Boolean(plan.all_day),
-        canonicalEventId: plan.canonical_event_id ?? undefined,
-        optionality: plan.optionality ?? "unknown", attendancePolicy: plan.attendance_policy ?? "not_specified",
-        classificationConfidence: Number(plan.classification_confidence ?? 0), classificationReason: plan.classification_reason ?? undefined,
-        blockingStatus: plan.blocking_status ?? "busy", sourceLabel: plan.source_label ?? undefined,
-      })),
+      id: Number(plan.local_id),
+      title: plan.title ?? "",
+      date: plan.date ?? new Date().toISOString().split("T")[0],
+      startLabel: plan.start_label ?? "9:00 AM",
+      endLabel: plan.end_label ?? "10:00 AM",
+      recurrence: plan.recurrence ?? "none",
+      category: plan.category ?? "other",
+      priority: plan.priority ?? "medium",
+      notes: plan.notes ?? "",
+      customRecurrence: plan.custom_recurrence ?? "",
+      seriesId: plan.series_id ?? undefined,
+      excludedDates: plan.excluded_dates ?? [],
+      source: plan.source ?? "ass",
+      googleEventId: plan.google_event_id ?? undefined,
+      googleAccountId: plan.google_account_id ?? undefined,
+      googleCalendarId: plan.google_calendar_id ?? undefined,
+      googleRecurringEventId: plan.google_recurring_event_id ?? undefined,
+      googleColor: plan.google_color ?? undefined,
+      googleEtag: plan.google_etag ?? undefined,
+      googleUpdatedAt: plan.google_updated_at ?? undefined,
+      allDay: Boolean(plan.all_day),
+      canonicalEventId: plan.canonical_event_id ?? undefined,
+      optionality: plan.optionality ?? "unknown",
+      attendancePolicy: plan.attendance_policy ?? "not_specified",
+      classificationConfidence: Number(plan.classification_confidence ?? 0),
+      classificationReason: plan.classification_reason ?? undefined,
+      blockingStatus: plan.blocking_status ?? "busy",
+      sourceLabel: plan.source_label ?? undefined,
+    })),
   };
 }
 
-export async function saveCloudSnapshot(userId: string, snapshot: LocalSnapshot) {
+export async function saveCloudSnapshot(
+  userId: string,
+  snapshot: LocalSnapshot,
+) {
   const supabase = getBrowserSupabaseClient();
   if (!supabase) return;
 
@@ -251,7 +275,9 @@ async function replacePlans(userId: string, plans: SavedPlan[]) {
 
   // Canonical rows are server-owned. Replacing them from a stale browser snapshot
   // made successful file/task conversions disappear on the next debounced save.
-  const localPlans = plans.filter((plan) => plan.source !== "google" && !plan.canonicalEventId);
+  const localPlans = plans.filter(
+    (plan) => plan.source !== "google" && !plan.canonicalEventId,
+  );
   const { error: deleteError } = await supabase
     .from("plans")
     .delete()
@@ -268,7 +294,7 @@ async function replacePlans(userId: string, plans: SavedPlan[]) {
       ...planToRow(plan),
       user_id: userId,
       updated_at: new Date().toISOString(),
-    }))
+    })),
   );
   if (insertError) {
     throw new Error(`Supabase plans insert failed: ${insertError.message}`);
@@ -278,34 +304,50 @@ async function replacePlans(userId: string, plans: SavedPlan[]) {
 async function replaceRows(
   userId: string,
   table: "todos" | "habits" | "journal_entries" | "plans",
-  rows: Array<Record<string, unknown>>
+  rows: Array<Record<string, unknown>>,
 ) {
   const supabase = getBrowserSupabaseClient();
   if (!supabase) return;
 
-  const { error: deleteError } = await supabase
-    .from(table)
-    .delete()
-    .eq("user_id", userId);
+  const { error: deleteError } =
+    table === "todos"
+      ? { error: null }
+      : await supabase.from(table).delete().eq("user_id", userId);
   if (deleteError) {
     throw new Error(`Supabase ${table} replace failed: ${deleteError.message}`);
   }
   if (rows.length === 0) return;
 
-  const uniqueRows = [...new Map(rows.map((row) => [String(row.local_id), row])).values()];
+  const uniqueRows = [
+    ...new Map(rows.map((row) => [String(row.local_id), row])).values(),
+  ];
   const { error: insertError } = await supabase.from(table).upsert(
     uniqueRows.map((row) => ({
       ...row,
       user_id: userId,
       updated_at: new Date().toISOString(),
     })),
-    { onConflict: "user_id,local_id" }
+    { onConflict: "user_id,local_id" },
   );
   if (insertError) {
     throw new Error(`Supabase ${table} insert failed: ${insertError.message}`);
   }
 }
 
+export async function deleteCloudTodo(userId: string, localId: number) {
+  const supabase = getBrowserSupabaseClient();
+  if (!supabase) throw new Error("Cloud Tasks is not configured");
+  const { error } = await supabase
+    .from("todos")
+    .update({
+      deleted_at: new Date().toISOString(),
+      status: "IGNORED",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", userId)
+    .eq("local_id", localId);
+  if (error) throw error;
+}
 function todoToRow(todo: Todo) {
   return {
     local_id: todo.id,
@@ -314,6 +356,8 @@ function todoToRow(todo: Todo) {
     priority: todo.priority,
     duration: todo.duration,
     due_date: todo.dueDate,
+    description: todo.description,
+    status: todo.status,
     tags: todo.tags ?? [],
     recurrence: todo.recurrence ?? "none",
     subtasks: todo.subtasks ?? [],
@@ -371,8 +415,11 @@ function planToRow(plan: SavedPlan) {
     google_updated_at: plan.googleUpdatedAt ?? null,
     all_day: plan.allDay ?? false,
     canonical_event_id: plan.canonicalEventId ?? null,
-    optionality: plan.optionality ?? "unknown", attendance_policy: plan.attendancePolicy ?? "not_specified",
-    classification_confidence: plan.classificationConfidence ?? 0, classification_reason: plan.classificationReason ?? null,
-    blocking_status: plan.blockingStatus ?? "busy", source_label: plan.sourceLabel ?? null,
+    optionality: plan.optionality ?? "unknown",
+    attendance_policy: plan.attendancePolicy ?? "not_specified",
+    classification_confidence: plan.classificationConfidence ?? 0,
+    classification_reason: plan.classificationReason ?? null,
+    blocking_status: plan.blockingStatus ?? "busy",
+    source_label: plan.sourceLabel ?? null,
   };
 }

@@ -5,6 +5,11 @@ export type Todo = {
   priority: "low" | "medium" | "high";
   duration: number;
   dueDate: string | null;
+  description?: string;
+  status?: "TODO" | "IN_PROGRESS" | "WAITING" | "COMPLETED" | "IGNORED";
+  dueAt?: string | null;
+  startAfter?: string | null;
+  googleSyncError?: string | null;
   tags?: string[];
   recurrence?: PlanRecurrence;
   subtasks?: Array<{
@@ -15,21 +20,10 @@ export type Todo = {
 };
 
 export type PlanCategory =
-  | "school"
-  | "fitness"
-  | "work"
-  | "health"
-  | "personal"
-  | "finance"
-  | "other";
+  "school" | "fitness" | "work" | "health" | "personal" | "finance" | "other";
 
 export type PlanRecurrence =
-  | "none"
-  | "daily"
-  | "weekly"
-  | "weekdays"
-  | "weekends"
-  | "custom";
+  "none" | "daily" | "weekly" | "weekdays" | "weekends" | "custom";
 
 export type PlanPriority = "low" | "medium" | "high";
 
@@ -56,8 +50,14 @@ export type SavedPlan = {
   googleUpdatedAt?: string;
   allDay?: boolean;
   canonicalEventId?: string;
-  optionality?: "required" | "recommended" | "optional" | "tentative" | "unknown";
-  attendancePolicy?: "mandatory_attendance" | "graded_participation" | "attendance_recommended" | "attendance_optional" | "not_specified";
+  optionality?:
+    "required" | "recommended" | "optional" | "tentative" | "unknown";
+  attendancePolicy?:
+    | "mandatory_attendance"
+    | "graded_participation"
+    | "attendance_recommended"
+    | "attendance_optional"
+    | "not_specified";
   classificationConfidence?: number;
   classificationReason?: string;
   blockingStatus?: "busy" | "free";
@@ -97,7 +97,23 @@ export type EmailIntelligenceItem = {
   sender: string;
   title: string;
   summary: string;
-  type: "task" | "deadline" | "meeting" | "reminder" | "project_update" | "scholarship" | "research" | "club_event" | "financial_aid" | "travel" | "interview" | "invoice" | "finance_alert" | "calendar_conflict" | "calendar_merge" | "no_action";
+  type:
+    | "task"
+    | "deadline"
+    | "meeting"
+    | "reminder"
+    | "project_update"
+    | "scholarship"
+    | "research"
+    | "club_event"
+    | "financial_aid"
+    | "travel"
+    | "interview"
+    | "invoice"
+    | "finance_alert"
+    | "calendar_conflict"
+    | "calendar_merge"
+    | "no_action";
   importance: "low" | "normal" | "high" | "urgent";
   actionRequired: boolean;
   date: string | null;
@@ -163,7 +179,11 @@ export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   createdAt?: string;
-  sources?: Array<{label:string;url:string;kind:"gmail"|"drive"|"document"}>;
+  sources?: Array<{
+    label: string;
+    url: string;
+    kind: "gmail" | "drive" | "document";
+  }>;
   reconnect?: boolean;
 };
 
@@ -215,11 +235,7 @@ export type JournalSuggestion = {
 };
 
 export type CourseStatus =
-  | "registered"
-  | "shopping"
-  | "waitlisted"
-  | "dropped"
-  | "completed";
+  "registered" | "shopping" | "waitlisted" | "dropped" | "completed";
 
 export type AcademicCourse = {
   id: string;
@@ -260,12 +276,7 @@ export type AcademicAssignment = {
 };
 
 export type AcademicResourceType =
-  | "module"
-  | "page"
-  | "announcement"
-  | "calendar_event"
-  | "file"
-  | "discussion";
+  "module" | "page" | "announcement" | "calendar_event" | "file" | "discussion";
 
 export type AcademicResource = {
   id: string;

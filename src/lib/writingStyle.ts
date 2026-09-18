@@ -1,4 +1,5 @@
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
+import { GEMINI_MODELS } from "@/lib/geminiModels";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 
 const contexts = new Set(["formal_email", "professor_email", "club_application", "scholarship_essay", "casual_message", "academic_writing", "reflective_writing", "business_sales", "unknown"]);
@@ -29,7 +30,7 @@ Content:\n${trimmed}`;
   if (rows.length) { const { error } = await supabase.from("writing_samples").insert(rows); if (error) throw error; }
   for (const contextType of [...new Set(rows.filter((row) => row.approved).map((row) => row.context_type))]) {
     const approved = rows.filter((row) => row.approved && row.context_type === contextType);
-    const { error } = await supabase.from("writing_style_profiles").upsert({ user_id: userId, context_type: contextType, traits: { source: "high-confidence-user-spans", guidance: "Match the user's vocabulary, sentence length, directness, and sign-off patterns without copying facts.", sampleIds: approved.map((_, index) => `${importedSourceId}:${index}`) }, sample_count: approved.length, model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash", updated_at: new Date().toISOString() }, { onConflict: "user_id,context_type" });
+    const { error } = await supabase.from("writing_style_profiles").upsert({ user_id: userId, context_type: contextType, traits: { source: "high-confidence-user-spans", guidance: "Match the user's vocabulary, sentence length, directness, and sign-off patterns without copying facts.", sampleIds: approved.map((_, index) => `${importedSourceId}:${index}`) }, sample_count: approved.length, model: GEMINI_MODELS.fast, updated_at: new Date().toISOString() }, { onConflict: "user_id,context_type" });
     if (error) throw error;
   }
   console.info(JSON.stringify({ service: "writing-style", stage: "classified", importedSourceId, samples: rows.length, approved: rows.filter((row) => row.approved).length }));

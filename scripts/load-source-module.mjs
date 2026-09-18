@@ -1,0 +1,3 @@
+import fs from "node:fs";import path from "node:path";import ts from "typescript";import {createRequire} from "node:module";
+const require=createRequire(import.meta.url),cache=new Map();
+export function loadSourceModule(name){const file=path.resolve('src',name.replace(/^@\//,''))+'.ts';if(cache.has(file))return cache.get(file).exports;const module={exports:{}};cache.set(file,module);const code=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;new Function('require','module','exports',code)(name=>name.startsWith('@/')?loadSourceModule(name):require(name),module,module.exports);return module.exports;}

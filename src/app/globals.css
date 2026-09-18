@@ -985,6 +985,16 @@ body {
 .inbox-page .extraction-item time,.inbox-page .extraction-item small,.inbox-page .analysis-counts,.inbox-page .file-card-heading p,.inbox-page .extraction-description{color:var(--text-secondary);opacity:1}
 .inbox-page .file-failure,.inbox-page .inbox-error{color:var(--status-danger)}
 /* Pair every Inbox button surface with its foreground; never inherit global white text. */
+.inbox-page{--text-on-accent:#ffffff;--button-disabled-bg:#f1f2f5;--button-disabled-text:#626675;--border-default:#d5d7df}
+@media(prefers-color-scheme:dark){.inbox-page{--text-on-accent:#1c1c1f;--button-disabled-bg:#292a30;--button-disabled-text:#b5b9c5;--border-default:#50535f}}
+.inbox-page .extraction-group{background:var(--surface-secondary);color:var(--text-primary);padding:4px 12px;border:1px solid var(--border-default)}
+.inbox-page .extraction-group>summary{background:var(--surface-secondary);color:var(--text-primary);border-radius:12px;padding:12px;list-style:none;min-height:48px}
+.inbox-page .extraction-group>summary::-webkit-details-marker{display:none}
+.inbox-page .extraction-group>summary:hover,.inbox-page .extraction-group>summary:active{background:var(--surface-elevated);color:var(--text-primary)}
+.inbox-page .extraction-group>summary strong{font-weight:600}
+.inbox-page .extraction-group>summary span{color:var(--text-secondary);font-weight:500}
+.extraction-group-meta{display:flex;align-items:center;gap:12px}.extraction-group-count{min-width:28px;text-align:right}.extraction-group-meta svg{transition:transform .16s ease}.extraction-group[open]>.extraction-group-meta svg,.extraction-group[open]>summary .extraction-group-meta svg{transform:rotate(180deg)}
+.inbox-page :is(.file-card,.text-import-card,.extraction-item){background:var(--surface-primary);color:var(--text-primary)}
 .inbox-page{--button-primary-bg:#17181c;--button-primary-text:#ffffff;--button-secondary-bg:#f1f2f5;--button-secondary-text:#17181c;--button-danger-bg:#a82121;--button-danger-text:#ffffff;--border-focus:#174ea6}
 @media(prefers-color-scheme:dark){.inbox-page{--button-primary-bg:#f5f5f7;--button-primary-text:#1c1c1f;--button-secondary-bg:#292a30;--button-secondary-text:#f5f5f7;--button-danger-bg:#ffb4b4;--button-danger-text:#1c1c1f;--border-focus:#a8caff}}
 .inbox-page button{min-height:44px;border-radius:.8rem;padding:.55rem .85rem;background:var(--button-secondary-bg);color:var(--button-secondary-text);opacity:1}

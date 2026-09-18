@@ -1,4 +1,5 @@
 "use client";
+import { ChevronDown } from "lucide-react";
 type Item = {
   id: string;
   item_type: string;
@@ -93,8 +94,13 @@ export default function ExtractionReview({
               open={["Actionable", "Needs Review"].includes(key)}
             >
               <summary>
-                {key}
-                <span>{entries.length}</span>
+                <strong>{key}</strong>
+                <span className="extraction-group-meta">
+                  <span className="extraction-group-count">
+                    {entries.length}
+                  </span>
+                  <ChevronDown size={18} aria-hidden="true" />
+                </span>
               </summary>
               <div className="analysis-counts">
                 {[...counts].map(([label, count]) => (

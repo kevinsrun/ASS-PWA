@@ -8,6 +8,7 @@ import {
 } from "@/lib/objectCreation";
 import { deriveAcademicSchedule } from "@/lib/academicSchedule";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
+import { GEMINI_MODELS } from "@/lib/geminiModels";
 import { extractDocumentText } from "@/lib/documentText";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import { SchemaType, type Schema } from "@google/generative-ai";
@@ -260,16 +261,25 @@ const syllabusSchema: Schema = {
 async function modelJson(
   parts: Parameters<ReturnType<typeof getGeminiModel>["generateContent"]>[0],
   schema: Schema,
+  thinkingLevel: "low" | "high" = "high",
 ) {
   let response;
   try {
-    response = await getGeminiModel(undefined, schema).generateContent(parts, {
+    response = await getGeminiModel(
+      thinkingLevel === "low" ? GEMINI_MODELS.fast : GEMINI_MODELS.reasoning,
+      schema,
+      thinkingLevel,
+    ).generateContent(parts, {
       timeout: 45_000,
     });
   } catch (error) {
     if (!String(error).includes("429")) throw error;
     rotateGeminiKey();
-    response = await getGeminiModel(undefined, schema).generateContent(parts, {
+    response = await getGeminiModel(
+      thinkingLevel === "low" ? GEMINI_MODELS.fast : GEMINI_MODELS.reasoning,
+      schema,
+      thinkingLevel,
+    ).generateContent(parts, {
       timeout: 45_000,
     });
   }
@@ -303,7 +313,7 @@ export async function analyzeFile(
         data: file.buffer.toString("base64"),
       },
     });
-  const document = await modelJson(parts, segmentationSchema);
+  const document = await modelJson(parts, segmentationSchema, "low");
   if (
     !fileClassifications.includes(document.classification as FileClassification)
   )
@@ -712,6 +722,8 @@ export async function commitExtractionItem(
       sourceKind: item.imported_file_id ? "file" : "text",
       sourceId: itemId,
       title: String(item.title),
+      description: String(item.description ?? ""),
+      dueAt: item.due_at ?? null,
       dueDate: item.due_at ? String(item.due_at).slice(0, 10) : null,
       priority: item.required ? "high" : "medium",
       duration: item.duration_minutes ?? 60,

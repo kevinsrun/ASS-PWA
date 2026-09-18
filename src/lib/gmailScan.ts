@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { hasTaskInstruction } from "@/lib/taskEvidence";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
 import { addMinutesToLabel, formatTimeLabel } from "@/lib/dateTime";
 import { getGoogleAccessToken, listGoogleAccounts } from "@/lib/googleAuth";
@@ -553,7 +554,7 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
           if (automation.create_deadlines && row.action_required && row.confidence >= 0.9 && row.date && ["deadline","financial_aid","invoice","scholarship"].includes(row.intelligence_type) && /\b(?:due|deadline|by|before)\b/i.test(byId.get(row.external_id)?.evidence_text ?? "")) {
             const deadline = await createDeadline(userId, { sourceKind: "gmail", sourceId, title: row.title, dueAt: `${row.date}T${row.time ?? "00:00"}:00`, priority, notes: row.summary, googleAccountId: accountId, syncToGoogle: false });
             if (!deadline.event.duplicate) calendarEventsCreated += 1;
-          } else if ((automation.create_deadlines || !["deadline","financial_aid","invoice","scholarship"].includes(row.intelligence_type)) && row.action_required && row.confidence >= 0.9 && taskTypes.has(row.intelligence_type) && /\b(?:required|must|mandatory|due|deadline)\b/i.test(byId.get(row.external_id)?.evidence_text ?? "")) {
+          } else if ((automation.create_deadlines || !["deadline","financial_aid","invoice","scholarship"].includes(row.intelligence_type)) && row.action_required && row.confidence >= 0.9 && taskTypes.has(row.intelligence_type) && hasTaskInstruction(byId.get(row.external_id)?.evidence_text ?? "")) {
             await createTask(userId, { sourceKind: "gmail", sourceId, title: row.title, dueDate: row.date, priority, duration: row.duration, tags: [row.intelligence_type, "email", String(account.connected_email ?? "google")] });
           }
           const eventLike = ["meeting", "club_event", "interview", "travel"].includes(row.intelligence_type);

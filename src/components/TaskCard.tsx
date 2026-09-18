@@ -21,9 +21,13 @@ export default function TaskCard({
   const [priority, setPriority] = useState(todo.priority);
   const [duration, setDuration] = useState(todo.duration);
   const [dueDate, setDueDate] = useState(todo.dueDate ?? "");
+  const [status, setStatus] = useState(
+    todo.status ?? (todo.done ? "COMPLETED" : "TODO"),
+  );
+  const [description, setDescription] = useState(todo.description ?? "");
   const [tags, setTags] = useState((todo.tags ?? []).join(", "));
   const [recurrence, setRecurrence] = useState<PlanRecurrence>(
-    todo.recurrence ?? "none"
+    todo.recurrence ?? "none",
   );
   const [subtasks, setSubtasks] = useState(todo.subtasks ?? []);
   const [newSubtask, setNewSubtask] = useState("");
@@ -34,6 +38,8 @@ export default function TaskCard({
       priority,
       duration,
       dueDate: dueDate || null,
+      status,
+      description,
       tags: tags
         .split(",")
         .map((tag) => tag.trim())
@@ -56,6 +62,20 @@ export default function TaskCard({
         />
 
         <div className="mb-2 flex flex-wrap gap-2">
+          <select
+            aria-label="Task status"
+            className="ass-select"
+            value={status}
+            onChange={(event) =>
+              setStatus(event.target.value as NonNullable<Todo["status"]>)
+            }
+          >
+            <option value="TODO">To do</option>
+            <option value="IN_PROGRESS">In progress</option>
+            <option value="WAITING">Waiting</option>
+            <option value="COMPLETED">Completed</option>
+            <option value="IGNORED">Ignored</option>
+          </select>
           <select
             value={priority}
             onChange={(e) =>
@@ -102,12 +122,21 @@ export default function TaskCard({
           className="ass-input mb-2 w-full"
           placeholder="Tags, comma separated"
         />
+        <textarea
+          aria-label="Task description"
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+          className="ass-input mb-2 w-full"
+        />
 
         <div className="editor-subgroup">
           <div className="mb-2 text-sm font-medium">Subtasks</div>
           <div className="space-y-2">
             {subtasks.map((subtask) => (
-              <label key={subtask.id} className="flex items-center gap-2 text-sm">
+              <label
+                key={subtask.id}
+                className="flex items-center gap-2 text-sm"
+              >
                 <input
                   type="checkbox"
                   checked={subtask.done}
@@ -116,8 +145,8 @@ export default function TaskCard({
                       prev.map((item) =>
                         item.id === subtask.id
                           ? { ...item, done: !item.done }
-                          : item
-                      )
+                          : item,
+                      ),
                     )
                   }
                 />
@@ -150,10 +179,7 @@ export default function TaskCard({
         </div>
 
         <div className="flex gap-2">
-          <button
-            onClick={saveEdit}
-            className="ass-primary-button"
-          >
+          <button onClick={saveEdit} className="ass-primary-button">
             Save
           </button>
 
@@ -174,24 +200,35 @@ export default function TaskCard({
         type="button"
         className={`reminder-check ${todo.done ? "is-done" : ""}`}
         onClick={() => onToggle(todo.id)}
-        aria-label={todo.done ? `Mark ${todo.title} incomplete` : `Complete ${todo.title}`}
+        aria-label={
+          todo.done ? `Mark ${todo.title} incomplete` : `Complete ${todo.title}`
+        }
       />
       <div className="reminder-copy">
         <div className={todo.done ? "line-through text-gray-400" : ""}>
           {todo.title}
         </div>
         <span>
-          {[todo.dueDate, `${todo.duration} min`, todo.recurrence !== "none" ? todo.recurrence : null]
+          {todo.status === "WAITING"
+            ? "Waiting · "
+            : todo.status === "IN_PROGRESS"
+              ? "In progress · "
+              : ""}
+          {[
+            todo.dueDate,
+            `${todo.duration} min`,
+            todo.recurrence !== "none" ? todo.recurrence : null,
+          ]
             .filter(Boolean)
             .join(" · ")}
         </span>
+        {todo.googleSyncError ? (
+          <span role="status">Google Tasks: {todo.googleSyncError}</span>
+        ) : null}
       </div>
 
       <div className="row-actions">
-        <button
-          onClick={() => setEditing(true)}
-          className="quiet-action"
-        >
+        <button onClick={() => setEditing(true)} className="quiet-action">
           Edit
         </button>
 

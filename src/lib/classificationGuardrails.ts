@@ -1,3 +1,4 @@
+import { hasTaskInstruction } from "@/lib/taskEvidence";
 export const factualLabels = [
   "REFERENCE",
   "CALENDAR_EVENT",
@@ -207,6 +208,12 @@ export function validateExtractedItem(input: {
     confidence = Math.min(confidence, 0.69);
   }
   if (
+    ["ASSIGNMENT", "REQUIRED_FORM"].includes(label) &&
+    !input.dueAt &&
+    hasTaskInstruction(evidence)
+  )
+    label = "TASK";
+  if (
     ["DEADLINE", "ASSIGNMENT", "REQUIRED_FORM"].includes(label) &&
     (!input.dueAt ||
       Number.isNaN(Date.parse(input.dueAt)) ||
@@ -220,7 +227,8 @@ export function validateExtractedItem(input: {
   }
   if (
     ["TASK", "READING", "PROJECT"].includes(label) &&
-    !actionEvidence.test(evidence)
+    !actionEvidence.test(evidence) &&
+    !hasTaskInstruction(evidence)
   ) {
     failures.push("No required action or action verb in the evidence");
     label = "REFERENCE";
@@ -247,10 +255,7 @@ export function validateExtractedItem(input: {
           : label === "IGNORE"
             ? "ignore"
             : "reference";
-  const required =
-    label !== "OFFICE_HOURS" &&
-    Boolean(input.required) &&
-    /\b(?:required|must|mandatory|due|deadline)\b/i.test(evidence);
+  const required = label !== "OFFICE_HOURS" && hasTaskInstruction(evidence);
   return {
     label,
     confidence,

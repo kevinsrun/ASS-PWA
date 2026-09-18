@@ -803,6 +803,8 @@ export async function executeAgentTool(
         .from("todos")
         .select("*")
         .eq("user_id", ctx.userId)
+        .is("deleted_at", null)
+        .neq("status", "IGNORED")
         .eq("done", false);
       if (args.query)
         query = query.ilike("title", `%${text(args, "query", 300)}%`);
