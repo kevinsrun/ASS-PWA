@@ -4,6 +4,11 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/providers/AuthProvider";
 import type { AutomationSettings } from "@/lib/automationSettings";
 type Data = {
+  discovery: Array<{
+    source_key: string;
+    last_success_at: string | null;
+    error_message: string | null;
+  }>;
   suppressed: Array<{
     id: string;
     title: string;
@@ -24,6 +29,11 @@ type Data = {
   }>;
 };
 const toggles = [
+  [
+    "discover_opportunities",
+    "Discover relevant opportunities",
+    "Check verified official event feeds twice daily. Suggestions never create calendar commitments.",
+  ],
   [
     "mark_processed_read",
     "Mark processed email read",
@@ -177,6 +187,40 @@ export default function AutomationPage() {
               {!data.accounts.length ? (
                 <div className="settings-row">
                   Connect a Google account in Profile.
+                </div>
+              ) : null}
+            </div>
+          </section>
+          <section className="settings-section">
+            <h2>Opportunity sources</h2>
+            <div className="settings-group">
+              <div className="settings-row">
+                <div>
+                  <strong>MIT official calendar</strong>
+                  <span>
+                    Verified coverage only. Other institutions and registration
+                    workflows are not connected yet.
+                  </span>
+                </div>
+              </div>
+              {data.discovery.map((source) => (
+                <div className="settings-row" key={source.source_key}>
+                  <div>
+                    <strong>{source.source_key.toUpperCase()}</strong>
+                    <span>
+                      {source.last_success_at
+                        ? `Last checked ${new Date(source.last_success_at).toLocaleString()}`
+                        : "No successful check yet"}
+                    </span>
+                    {source.error_message ? (
+                      <span role="alert">{source.error_message}</span>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+              {!data.discovery.length ? (
+                <div className="settings-row">
+                  <span>Waiting for the next background discovery run.</span>
                 </div>
               ) : null}
             </div>

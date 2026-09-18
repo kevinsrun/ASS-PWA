@@ -8,6 +8,7 @@ import { refreshFinanceAlerts } from "@/lib/finance";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import { weatherDecisionContext } from "@/lib/weatherContext";
 import { reconcileExtractedItems } from "@/lib/extractionReconciliation";
+import { discoverOpportunities } from "@/lib/opportunityDiscovery";
 
 export type IntelligenceRunMetrics = {
   accountsScanned: number; emailsScanned: number; calendarEventsScanned: number;
@@ -100,6 +101,11 @@ export async function runIntelligenceSync(triggerKind: "cron" | "manual" = "cron
       } catch (error) { metrics.errors.push(`${accountId.slice(0, 8)} drive: ${error instanceof Error ? error.message : "unknown error"}`); }
     }
     for (const userId of userIds) {
+      try {
+        const discovery = await discoverOpportunities(userId);
+        metrics.actionItemsCreated += discovery.created;
+        metrics.errors.push(...discovery.errors.map(message => `${userId.slice(0, 8)} opportunities: ${message}`));
+      } catch (error) { metrics.errors.push(`${userId.slice(0, 8)} opportunities: ${error instanceof Error ? error.message : 'Unknown failure'}`); }
       try {
         const { data: lastReconciliation, error: reconciliationReadError } = await supabase.from("extraction_reconciliation_runs").select("completed_at").eq("user_id", userId).in("status", ["completed", "partial"]).order("completed_at", { ascending: false }).limit(1).maybeSingle();
         if (reconciliationReadError) throw reconciliationReadError;

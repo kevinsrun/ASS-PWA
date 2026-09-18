@@ -6,6 +6,7 @@ export type AutomationSettings = {
   unsubscribe_junk: boolean;
   create_deadlines: boolean;
   create_reply_drafts: boolean;
+  discover_opportunities: boolean;
 };
 export const defaultAutomationSettings: AutomationSettings = {
   mode: "balanced",
@@ -14,6 +15,7 @@ export const defaultAutomationSettings: AutomationSettings = {
   unsubscribe_junk: false,
   create_deadlines: true,
   create_reply_drafts: true,
+  discover_opportunities: true,
 };
 export const gmailModifyScope = "https://www.googleapis.com/auth/gmail.modify";
 export function canModifyGmail(scope?: string | null) {
@@ -29,7 +31,7 @@ export async function getAutomationSettings(
   const { data, error } = await db
     .from("automation_settings")
     .select(
-      "mode,mark_processed_read,archive_junk,unsubscribe_junk,create_deadlines,create_reply_drafts",
+      "mode,mark_processed_read,archive_junk,unsubscribe_junk,create_deadlines,create_reply_drafts,discover_opportunities",
     )
     .eq("user_id", userId)
     .maybeSingle();
