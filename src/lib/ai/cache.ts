@@ -18,6 +18,7 @@ export function aiCacheKey(input:{content:string;task:string;model:string;prompt
 export async function cachedAIResult<T>(input:{userId?:string;content:string;task:string;model:string;promptVersion:string;analysisVersion:string;bypass?:boolean;validate:(value:unknown)=>value is T},compute:()=>Promise<T>):Promise<T>{
  return withAIUsage(input.userId,input.task,async()=>{
  const db=input.userId?getServiceSupabaseClient():null,key=aiCacheKey(input);
+ if(db&&input.bypass){try{const removed=await db.from("ai_result_cache").delete().eq("user_id",input.userId!).eq("cache_key",key);if(removed.error)throw removed.error;}catch{console.warn(JSON.stringify({service:"ai-cache",stage:"refresh-invalidation-failed",task:input.task}));}}
  if(db&&!input.bypass){try{const hit=await db.from("ai_result_cache").select("result_json").eq("user_id",input.userId!).eq("cache_key",key).gt("expires_at",new Date().toISOString()).maybeSingle();if(hit.error)throw hit.error;if(hit.data&&input.validate(hit.data.result_json)){trackAIUsage("cache_hit",input.model);return hit.data.result_json;}}catch{console.warn(JSON.stringify({service:"ai-cache",stage:"read-failed",task:input.task}));}}
  let value:T;try{value=await compute();}catch(error){trackAIUsage("failure",input.model);throw error;}
  // Escalation/unknown results may be valid control flow, but are never cacheable.

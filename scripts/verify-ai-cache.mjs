@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {loadSourceModule as load} from './load-source-module.mjs';
 const rows=new Map(),events=[];
 let outage=false;
-class Query{constructor(table){this.table=table;this.filters={};}select(){return this;}eq(key,value){this.filters[key]=value;return this;}gt(){return this;}maybeSingle(){return this;}insert(value){events.push(value);return Promise.resolve({error:null});}upsert(value){rows.set(`${value.user_id}:${value.cache_key}`,value);return Promise.resolve({error:null});}then(resolve){return Promise.resolve({data:outage?null:rows.get(`${this.filters.user_id}:${this.filters.cache_key}`)??null,error:outage?new Error('db offline'):null}).then(resolve);}}
+class Query{constructor(table){this.table=table;this.filters={};}select(){return this;}eq(key,value){this.filters[key]=value;return this;}gt(){return this;}delete(){this.deleting=true;return this;}maybeSingle(){return this;}insert(value){events.push(value);return Promise.resolve({error:null});}upsert(value){rows.set(`${value.user_id}:${value.cache_key}`,value);return Promise.resolve({error:null});}then(resolve){const key=`${this.filters.user_id}:${this.filters.cache_key}`;if(this.deleting)rows.delete(key);return Promise.resolve({data:outage?null:rows.get(key)??null,error:outage?new Error('db offline'):null}).then(resolve);}}
 load('@/lib/supabaseServer').getServiceSupabaseClient=()=>({from:table=>new Query(table)});
 const {cachedAIResult,aiCacheKey,trackAIUsage}=load('@/lib/ai/cache');
 const input={userId:'owner',content:'unchanged document',task:'document_analysis',model:'fixture',promptVersion:'v1',analysisVersion:'v1',validate:value=>Boolean(value?.ok)};
@@ -13,8 +13,9 @@ for(const patch of [{content:'changed'},{model:'new'},{promptVersion:'v2'},{anal
 assert.equal(calls,6,'content/model/pipeline invalidation');
 await cachedAIResult({...input,bypass:true},compute);assert.equal(calls,7);await cachedAIResult(input,compute);assert.equal(calls,7,'explicit reanalysis replaces same cache key');
 assert.equal(aiCacheKey(input),aiCacheKey({...input,bypass:true}));
+await assert.rejects(cachedAIResult({...input,bypass:true},async()=>{throw new Error('refresh failed');}),/refresh failed/);assert.equal(rows.has(`owner:${aiCacheKey(input)}`),false,'failed forced refresh cannot leave old cached analysis reusable');await cachedAIResult(input,compute);assert.equal(calls,8);
 const before=rows.size;await assert.rejects(cachedAIResult({...input,content:'failure'},async()=>{throw new Error('provider down');}),/provider down/);assert.equal(rows.size,before,'failures never cached');
 await cachedAIResult({...input,content:'unknown'},async()=>null);assert.equal(rows.size,before,'unknown/escalation not cached');
-outage=true;await cachedAIResult(input,compute);assert.equal(calls,8,'cache DB outage cannot break inference');
+outage=true;await cachedAIResult(input,compute);assert.equal(calls,9,'cache DB outage cannot break inference');
 assert(events.every(row=>row.user_id&& !('content' in row)&&!('input_text' in row)),'usage events contain no source text');
 console.log('AI cache fixtures passed: unchanged content reuse, owner isolation, content/model/prompt/analysis invalidation, forced refresh, failures/unknown excluded, DB read outage fallback and scoped metadata-only usage. Database/provider mocked.');
