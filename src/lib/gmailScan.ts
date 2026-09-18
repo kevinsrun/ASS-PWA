@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { hasTaskInstruction } from "@/lib/taskEvidence";
+import {preclassifyEmail,consequentialEmail} from "@/lib/ai/emailTriage";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
 import { addMinutesToLabel, formatTimeLabel } from "@/lib/dateTime";
 import { getGoogleAccessToken, listGoogleAccounts } from "@/lib/googleAuth";
@@ -222,7 +223,9 @@ export function cheapEmailFilter(message: GmailMessage): string | null {
   if (message.labelIds?.some(label=>["SPAM","TRASH","SENT","DRAFT"].includes(label))) return "Mailbox state excludes inbound action processing";
   const text = `${header(message,"Subject")}\n${message.snippet ?? ""}\n${messageText(message)}`;
   if (/\b(?:due|deadline|required|must|confirm|availability|interview|financial aid|scholarship|appointment|meeting|form|application|please|can you|could you)\b|\?/i.test(text)) return null;
-  if (header(message,"List-Id") || (header(message,"List-Unsubscribe") && /newsletter|digest|unsubscribe|weekly update/i.test(text))) return "Bulk announcement with no direct action signal";
+  if (consequentialEmail({subject:header(message,"Subject"),sender:header(message,"From"),body:messageText(message),snippet:message.snippet ?? "",bulk:Boolean(header(message,"List-Id") || header(message,"List-Unsubscribe"))})) return null;
+  // A mailing-list header alone never proves that an announcement is irrelevant.
+  if ((header(message,"List-Id") || header(message,"List-Unsubscribe")) && /\b(?:promo code|discount code|clearance|free shipping)\b/i.test(text)) return "Exact retail bulk rule with no protected/action signal";
   return null;
 }
 
@@ -256,8 +259,15 @@ async function applyMailboxChanges(userId:string,accountId:string,changes:NonNul
 async function classify(messages: GmailMessage[], context: string) {
   if (messages.length === 0) return [];
   const filtered = messages.filter(message=>cheapEmailFilter(message));
-  const deep = messages.filter(message=>!cheapEmailFilter(message));
+  const candidates = messages.filter(message=>!cheapEmailFilter(message));
   const cheap = filtered.map(message=>safeClassification(message,{type:"no_action",importance:"low",confidence:1,evidence_text:message.snippet ?? header(message,"Subject"),rationale:cheapEmailFilter(message)!}));
+  const deep:GmailMessage[] = [];
+  // Sequential bounded local work avoids loading parallel copies on a small Mac.
+  for (const message of candidates) {
+    const prediction = await preclassifyEmail({subject:header(message,"Subject"),sender:header(message,"From"),body:messageText(message),snippet:message.snippet ?? "",bulk:Boolean(header(message,"List-Id") || header(message,"List-Unsubscribe"))});
+    if (prediction) cheap.push(safeClassification(message,{type:"no_action",importance:"low",confidence:prediction.confidence,evidence_text:prediction.evidence,rationale:`Local ${prediction.classification.toLowerCase()} triage; evidence validated by code`,actionRequired:false,responseNeeded:false}));
+    else deep.push(message);
+  }
   if (!deep.length) return cheap;
   const input = deep.map((message) => ({
     id: message.id,
