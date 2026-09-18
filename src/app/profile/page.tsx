@@ -461,6 +461,11 @@ export default function ProfilePage() {
             </div>
             <ChevronRight size={17} aria-hidden="true" />
           </Link>
+          <Link href="/debug/ai" className="settings-row settings-row--link">
+            <Activity size={20} aria-hidden="true" />
+            <div><strong>AI Usage</strong><span>Requests, cached analyses, and escalations</span></div>
+            <ChevronRight size={17} aria-hidden="true" />
+          </Link>
           <Link href="/debug/agent" className="settings-row settings-row--link">
             <Activity size={20} aria-hidden="true" />
             <div>

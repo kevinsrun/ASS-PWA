@@ -1,6 +1,7 @@
 import {executeAIRequest} from "@/lib/ai/router";
 import {generateOllamaJSON,ollamaConfiguration} from "@/lib/ai/ollama";
 import {hasTaskInstruction} from "@/lib/taskEvidence";
+import {trackAIUsage,cachedAIResult,currentAIUser} from "@/lib/ai/cache";
 
 export type EmailTriageInput = {subject:string;sender:string;body:string;snippet:string;bulk:boolean};
 export type LocalEmailTriage = {classification:"SPAM"|"NEWSLETTER"|"REFERENCE"|"TASK"|"DEADLINE"|"EVENT"|"UNKNOWN";confidence:number;escalate:boolean;evidence:string};
@@ -20,7 +21,11 @@ export function validLowRiskTriage(input:EmailTriageInput,prediction:LocalEmailT
   if (consequentialEmail(input) || !input.bulk || !prediction || typeof prediction.evidence !== "string" || prediction.evidence.trim().length < 8 || !text.includes(prediction.evidence)) return false;
   return prediction.classification === "NEWSLETTER" ? /\b(?:newsletter|weekly digest|daily digest)\b/i.test(text) : prediction.classification === "SPAM" && /\b(?:shop now|buy now|promo code|discount code|clearance|free shipping)\b/i.test(text);
 }
-export async function preclassifyEmail(input:EmailTriageInput):Promise<LocalEmailTriage|null> {
+export async function preclassifyEmail(input:EmailTriageInput,options:{bypassCache?:boolean}={}):Promise<LocalEmailTriage|null> {
+  if(!ollamaConfiguration().enabled || consequentialEmail(input))return null;
+  return cachedAIResult<LocalEmailTriage|null>({userId:currentAIUser(),content:JSON.stringify(input),task:"email_triage",model:ollamaConfiguration().model??"disabled",promptVersion:"email-local-v2",analysisVersion:"safe-triage-v2",bypass:options.bypassCache,validate:(value):value is LocalEmailTriage|null=>Boolean(value&&typeof value==="object"&&Number.isFinite((value as LocalEmailTriage).confidence)&&(value as LocalEmailTriage).confidence>=.97&&(value as LocalEmailTriage).confidence<=1&&(value as LocalEmailTriage).escalate===false&&validLowRiskTriage(input,value as LocalEmailTriage))},()=>preclassifyEmailUncached(input));
+}
+async function preclassifyEmailUncached(input:EmailTriageInput):Promise<LocalEmailTriage|null> {
   if (!ollamaConfiguration().enabled || consequentialEmail(input)) return null;
   const content = JSON.stringify(input);
   // null means send to the existing batched Gemini classifier, not "no action".
@@ -33,5 +38,7 @@ export async function preclassifyEmail(input:EmailTriageInput):Promise<LocalEmai
     },validateLocal:value=>value !== null && validLowRiskTriage(input,value),gemini:async()=>null,
   });
   console.info(JSON.stringify({service:"ai-router",task:"email_triage",route:result.route,escalated:result.escalated,reason:result.reason,confidence:result.value?.confidence}));
+  if(result.escalated)trackAIUsage("escalation");
+  if(result.value)trackAIUsage("local_accepted",ollamaConfiguration().model,result.value.confidence);
   return result.value;
 }

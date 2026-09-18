@@ -9,6 +9,7 @@ import {
 import { deriveAcademicSchedule } from "@/lib/academicSchedule";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
 import { GEMINI_MODELS } from "@/lib/geminiModels";
+import {cachedAIResult} from "@/lib/ai/cache";
 import { extractDocumentText } from "@/lib/documentText";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import { SchemaType, type Schema } from "@google/generative-ai";
@@ -292,6 +293,21 @@ async function modelJson(
 export async function analyzeFile(
   file: { name: string; mimeType: string; buffer: Buffer },
   userId?: string,
+  options:{bypassCache?:boolean}={},
+):Promise<FileAnalysis>{
+  let context="";
+  const db=userId?getServiceSupabaseClient():null;
+  if(db){const results=await Promise.all([
+    db.from("classification_feedback").select("original_text,ai_predicted_label,user_corrected_label,user_action,context_json").eq("user_id",userId!).order("created_at",{ascending:false}).limit(20),
+    db.from("classification_rules").select("rule_text,confidence").eq("user_id",userId!).eq("active",true).order("id").limit(15),
+    db.from("academic_courses").select("name,course_code").eq("user_id",userId!).order("id").limit(20),
+  ]);for(const result of results)if(result.error)throw result.error;context=JSON.stringify(results.map(result=>result.data));}
+  const content=JSON.stringify({name:file.name,mimeType:file.mimeType,hash:createHash("sha256").update(file.buffer).digest("hex"),context,date:new Date().toISOString().slice(0,10)});
+  return cachedAIResult({userId,task:"document_analysis",content,model:JSON.stringify(GEMINI_MODELS),promptVersion:"document-v3",analysisVersion:"grounded-v3",bypass:options.bypassCache,validate:(value):value is FileAnalysis=>Boolean(value&&typeof value==="object"&&typeof (value as FileAnalysis).classification==="string"&&Array.isArray((value as FileAnalysis).items))},()=>analyzeFileUncached(file,userId));
+}
+async function analyzeFileUncached(
+  file: { name: string; mimeType: string; buffer: Buffer },
+  userId?: string,
 ): Promise<FileAnalysis> {
   const analysisStartedAt = Date.now();
   const text = await extractDocumentText(file);
@@ -396,11 +412,13 @@ export async function analyzeFile(
         .select("rule_text,confidence")
         .eq("user_id", userId)
         .eq("active", true)
+        .order("id")
         .limit(15),
       supabase
         .from("academic_courses")
         .select("name,course_code")
         .eq("user_id", userId)
+        .order("id")
         .limit(20),
     ]);
     for (const result of [feedback, rules, courses])

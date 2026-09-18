@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { hasTaskInstruction } from "@/lib/taskEvidence";
 import {preclassifyEmail,consequentialEmail} from "@/lib/ai/emailTriage";
+import {withAIUsage,trackAIUsage} from "@/lib/ai/cache";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
 import { addMinutesToLabel, formatTimeLabel } from "@/lib/dateTime";
 import { getGoogleAccessToken, listGoogleAccounts } from "@/lib/googleAuth";
@@ -256,15 +257,16 @@ async function applyMailboxChanges(userId:string,accountId:string,changes:NonNul
   }
 }
 
-async function classify(messages: GmailMessage[], context: string) {
+async function classify(messages: GmailMessage[], context: string,bypassCache=false) {
   if (messages.length === 0) return [];
   const filtered = messages.filter(message=>cheapEmailFilter(message));
   const candidates = messages.filter(message=>!cheapEmailFilter(message));
   const cheap = filtered.map(message=>safeClassification(message,{type:"no_action",importance:"low",confidence:1,evidence_text:message.snippet ?? header(message,"Subject"),rationale:cheapEmailFilter(message)!}));
+  for(const message of filtered){void message;trackAIUsage("deterministic");}
   const deep:GmailMessage[] = [];
   // Sequential bounded local work avoids loading parallel copies on a small Mac.
   for (const message of candidates) {
-    const prediction = await preclassifyEmail({subject:header(message,"Subject"),sender:header(message,"From"),body:messageText(message),snippet:message.snippet ?? "",bulk:Boolean(header(message,"List-Id") || header(message,"List-Unsubscribe"))});
+    const prediction = await preclassifyEmail({subject:header(message,"Subject"),sender:header(message,"From"),body:messageText(message),snippet:message.snippet ?? "",bulk:Boolean(header(message,"List-Id") || header(message,"List-Unsubscribe"))},{bypassCache});
     if (prediction) cheap.push(safeClassification(message,{type:"no_action",importance:"low",confidence:prediction.confidence,evidence_text:prediction.evidence,rationale:`Local ${prediction.classification.toLowerCase()} triage; evidence validated by code`,actionRequired:false,responseNeeded:false}));
     else deep.push(message);
   }
@@ -455,7 +457,7 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
         const {error:processingError}=await supabase.from("email_messages").upsert(messages.map(message=>({user_id:userId,google_account_id:accountId,google_message_id:message.id,received_at:message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null,processing_status:"processing",processing_error:null,updated_at:new Date().toISOString()})),{onConflict:"user_id,google_account_id,google_message_id"});
         if(processingError) throw processingError;
       }
-      const classifications = await classify(messages, context.prompt);
+      const classifications = await withAIUsage(userId,"email_triage",()=>classify(messages, context.prompt,Boolean(forceMessageId)));
       const byId = new Map(classifications.map((item) => [item.id, item]));
       const processedAt = new Date().toISOString();
       const dispositions = new Map<string, ReturnType<typeof emailDisposition>>();

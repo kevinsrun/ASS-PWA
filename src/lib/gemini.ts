@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI, type Schema } from "@google/generative-ai";
 import { GEMINI_MODELS } from "@/lib/geminiModels";
+import {trackAIUsage} from "@/lib/ai/cache";
 
 const keys =
   process.env.GEMINI_API_KEYS?.split(",")
@@ -36,6 +37,7 @@ export function getGeminiModel(
   });
   const generate = selected.generateContent.bind(selected);
   selected.generateContent = async (...args) => {
+    trackAIUsage("gemini_request",model);
     try {
       const result = await generate(...args);
       console.info(
@@ -69,6 +71,8 @@ export function getGeminiModel(
           status,
         }),
       );
+      trackAIUsage("gemini_fallback",fallback);
+      trackAIUsage("gemini_request",fallback);
       const result = await genAI
         .getGenerativeModel({
           model: fallback,

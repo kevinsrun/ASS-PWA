@@ -46,7 +46,7 @@ new Function(
   }).outputText,
 )(
   (name) =>
-    name === "@/lib/geminiModels" ? configured.exports : { GoogleGenerativeAI },
+    name === "@/lib/geminiModels" ? configured.exports : name === "@/lib/ai/cache" ? {trackAIUsage:()=>{}} : { GoogleGenerativeAI },
   loaded,
   loaded.exports,
 );

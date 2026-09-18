@@ -1,3 +1,4 @@
+import {trackAIUsage} from "@/lib/ai/cache";
 /** Server-only provider. Endpoint and model come from deployment configuration, never request content. */
 export function ollamaConfiguration() {
   const enabled = process.env.OLLAMA_ENABLED === "true";
@@ -17,6 +18,7 @@ export async function generateOllamaJSON(prompt: string, schema: Record<string,u
   if (process.env.VERCEL && loopback) throw new Error("Vercel cannot reach the development Mac's localhost Ollama server");
   if (prompt.length > 16000) throw new Error("Local prompt exceeds the bounded triage budget");
   const start = Date.now();
+  trackAIUsage("ollama_request",model);
   const response = await fetch(`${url.toString().replace(/\/$/,"")}/api/generate`, {
     method:"POST",cache:"no-store",redirect:"error",signal:AbortSignal.timeout(12000),
     headers:{"Content-Type":"application/json"},

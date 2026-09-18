@@ -149,7 +149,7 @@ export async function reanalyzeSource(
       : query.eq("imported_source_id", sourceId);
     const { data: existing, error: existingError } = await query;
     if (existingError) throw existingError;
-    const analysis = await analyzeFile(input, user.id);
+    const analysis = await analyzeFile(input, user.id,{bypassCache:true});
     const { data: extraction, error } = await db
       .from("file_extractions")
       .insert({

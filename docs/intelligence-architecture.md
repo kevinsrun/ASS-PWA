@@ -49,7 +49,7 @@ Vercel localhost is not the development Mac. Keep local inference disabled there
 
 ## Remaining phased work
 
-3. Owner-isolated persistent cache and usage counters/dashboard; content/task/model/prompt/analysis versions in keys, failed results never cached.
+3. Implemented: owner-isolated persistent cache for completed document analysis and accepted local email triage; content/task/model/prompt/analysis versions in keys. Document cache also fingerprints correction/rule/course context and the analysis day. Failed/unknown/escalated results are never cached. Explicit document/email re-analysis bypasses cached results. Cache expiry is seven days (logical validity, not an automatic physical-retention cleanup job). Existing Gmail processed-source storage still prevents normal reclassification. Usage records track actual attempts, including fallbacks, in document and Gmail-classification scopes. Profile → AI Usage shows UTC-day counters and explicitly excludes uninstrumented chat/agent calls. Cache reuse is shown rather than inventing token/cost or batched Gemini call savings. No historical counters are fabricated. Cross-instance duplicate upload analysis is still governed by existing source leases; this cache does not introduce a new distributed lock.
 4. Consent-aware corrections/training example collection, quality filters and JSONL export. User corrections outrank verified and pseudo labels; never live-train Ollama.
 5–6. Shared PDF services/templates and Adobe adapter with server-side credentials and basic PDF fallback.
 7–10. Native SwiftUI authentication/skeleton, shared mobile APIs/screens, QR/forms preview/approval, APNs. Core processing stays server-side.
