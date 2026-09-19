@@ -2,7 +2,7 @@
 import {useEffect,useRef,useState} from 'react';
 import Link from 'next/link';
 import {useAuth} from '@/providers/AuthProvider';
-type Example={id:string;task_type:string;input_text:string;final_label:string;quality:string;correction_source:string};
+type Example={id:string;task_type:string;input_text:string;final_label:string;quality:string;correction_source:string;curation_status:string;trust_source:string;trust_score:number};
 type Dataset={enabled:boolean;retention_days?:number;examples:Example[]};
 const labels={task:'Task type',source:'Label provenance',confidence:'Minimum model confidence',from:'From (local time)',through:'Through (local time)'};
 export default function Training(){
@@ -65,7 +65,7 @@ export default function Training(){
    <p>Only approved examples. No historical backfill or teacher-generated labels. Exports over 1,000 records require a narrower date range.</p>
    <h2>Recent candidates</h2>
    {!data.examples.length?<p>No examples collected.</p>:data.examples.map(example=><section className="settings-group training-example" key={example.id}>
-    <p>{example.task_type} · {example.quality} · {example.correction_source}</p>
+    <p>{example.task_type} · {example.quality} · {example.curation_status} · {example.trust_source} {(example.trust_score*100).toFixed(0)}%</p>
     <details><summary>Review input and label</summary><pre>{example.input_text}</pre><p>Label: {example.final_label}</p></details>
     <div className="training-actions"><button disabled={busy||example.quality==='approved'} onClick={()=>void update({id:example.id,quality:'approved'})}>Approve</button><button disabled={busy||example.quality==='rejected'} onClick={()=>void update({id:example.id,quality:'rejected'})}>Reject</button><button disabled={busy} onClick={()=>{if(window.confirm('Permanently delete this training example?'))void mutate('DELETE',undefined,example.id);}}>Delete</button></div>
    </section>)}

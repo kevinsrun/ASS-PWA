@@ -1,0 +1,1 @@
+import {database} from './common.mjs';const db=database();const result=await db.from('model_candidates').select('id,name,version,base_model,ollama_model_name,status,eval_score,weighted_eval_score,created_at,promoted_at,retired_at').order('created_at',{ascending:false});if(result.error)throw result.error;console.log(JSON.stringify({candidates:result.data??[]},null,2));

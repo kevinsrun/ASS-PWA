@@ -1,3 +1,5 @@
+import {localTaskPermission} from '@/lib/ai/improvementPipeline';
+
 export type AIRoute = "DETERMINISTIC" | "LOCAL_GEMMA" | "GEMINI_LOW" | "GEMINI_MEDIUM" | "GEMINI_HIGH";
 export type AIRequest = {
   task: string;
@@ -23,7 +25,7 @@ export function routeAIRequest(request: AIRequest): {route: AIRoute; reason: str
   if (deterministic.has(request.task)) return {route:"DETERMINISTIC",reason:"Exact calculation or validation belongs to code",blocked:false};
   const important = request.importance === "high" || request.importance === "urgent";
   const uncertain = (request.ambiguity ?? 0) >= 0.5 || context.localEscalate === true || (context.localConfidence !== undefined && context.localConfidence < (request.confidenceRequired ?? 0.95));
-  const eligible = local.has(request.task) && !important && !uncertain && !context.toolUseRequired && request.content.length <= 12000;
+  const eligible = local.has(request.task) && localTaskPermission(request.task) && !important && !uncertain && !context.toolUseRequired && request.content.length <= 12000;
   if (eligible && context.localEnabled) return {route:"LOCAL_GEMMA",reason:"Bounded low-risk preclassification",blocked:false};
   if (context.privacy === "local_only") return {route:"LOCAL_GEMMA",reason:"Cloud inference forbidden by request privacy policy",blocked:!eligible || !context.localEnabled};
   const route: AIRoute = important || uncertain || context.toolUseRequired ? "GEMINI_HIGH" : local.has(request.task) ? "GEMINI_LOW" : "GEMINI_MEDIUM";

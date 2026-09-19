@@ -1,0 +1,2 @@
+create index model_deployments_previous_idx on public.model_deployments(previous_deployment_id);
+create index model_deployments_approver_idx on public.model_deployments(approved_by);

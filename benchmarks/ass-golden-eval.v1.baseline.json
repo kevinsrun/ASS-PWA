@@ -1,0 +1,10 @@
+{
+  "benchmark": "ass-golden-eval",
+  "version": 1,
+  "model": "gemma-4b",
+  "correct": 6,
+  "total": 12,
+  "accuracy": 0.5,
+  "status": "preserved_historical_baseline",
+  "note": "Historical ASS benchmark result. Do not reinterpret as production readiness."
+}

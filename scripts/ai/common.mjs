@@ -1,0 +1,11 @@
+import fs from 'node:fs';import path from 'node:path';import {execFileSync,spawnSync} from 'node:child_process';import {createClient} from '@supabase/supabase-js';import {loadSourceModule} from '../load-source-module.mjs';
+export const pipeline=loadSourceModule('@/lib/ai/improvementPipeline');
+export function args(argv=process.argv.slice(2)){const out={};for(let i=0;i<argv.length;i++){const value=argv[i];if(value.startsWith('--')){const key=value.slice(2);out[key]=argv[i+1]&&!argv[i+1].startsWith('--')?argv[++i]:true;}}return out;}
+export function readJsonl(file){return fs.readFileSync(file,'utf8').split(/\r?\n/).filter(Boolean).map((line,index)=>{try{return JSON.parse(line);}catch{throw new Error(`${file}:${index+1} is invalid JSON`);}});}
+export function writeJsonl(file,rows){fs.writeFileSync(file,rows.map(row=>JSON.stringify(row)).join('\n')+(rows.length?'\n':''));}
+export function ensureDir(dir){fs.mkdirSync(dir,{recursive:true});}
+export function gitCommit(){try{return execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();}catch{return 'unknown';}}
+export function database(){const url=process.env.NEXT_PUBLIC_SUPABASE_URL,key=process.env.SUPABASE_SECRET_KEY||process.env.SUPABASE_SERVICE_ROLE_KEY;if(!url||!key)throw new Error('Supabase server environment is required');return createClient(url,key,{auth:{persistSession:false,autoRefreshToken:false}});}
+export function safeArtifactRoot(value=process.env.LOCAL_TRAINING_OUTPUT_DIR||'artifacts/ai'){const root=path.resolve(value);if(root===path.parse(root).root||root===process.cwd())throw new Error('Artifact root must be a dedicated directory');return root;}
+export function run(command,commandArgs,options={}){const result=spawnSync(command,commandArgs,{stdio:'inherit',...options});if(result.status!==0)throw new Error(`${command} exited ${result.status}`);}
+export function datasetMessages(example){return{messages:[{role:'system',content:`Perform the ASS task ${example.task_type}. Return only grounded structured output.`},{role:'user',content:example.input_text},{role:'assistant',content:JSON.stringify(example.final_label)}],metadata:{id:example.id,task_type:example.task_type,source_type:example.source_type,source_hash:example.source_hash,trust_source:example.trust_source,trust_score:example.trust_score}};}
