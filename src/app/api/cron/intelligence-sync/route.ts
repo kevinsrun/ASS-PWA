@@ -14,6 +14,8 @@ export async function GET(request: NextRequest) {
   const maintenanceErrors:string[]=[];
   // Push recovery/watch maintenance also run outside the deep-planning window.
   try {
+    const retention=await getServiceSupabaseClient()?.rpc("purge_expired_model_training_examples",{p_user_id:null});
+    if(retention?.error)throw retention.error;
     const watches=await renewGmailWatches();
     const queued=await processGmailPushQueue(2);
     maintenanceErrors.push(...watches.errors,...queued.flatMap(result=>result.failures));

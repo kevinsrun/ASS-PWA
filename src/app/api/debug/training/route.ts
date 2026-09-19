@@ -9,7 +9,7 @@ export async function GET(request:NextRequest){try{
  if(params.get('export')==='jsonl'){
   const confidence=Number(params.get('confidence')??0);
   if(!Number.isFinite(confidence)||confidence<0||confidence>1)return NextResponse.json({error:'Confidence must be between 0 and 1'},{status:400});
-  let query=db.from('model_training_examples').select('task_type,input_text,final_label,correction_source,model_confidence,created_at').eq('user_id',user.id).eq('quality','approved');
+  let query=db.from('model_training_examples').select('task_type,input_text,final_label,correction_source,model_confidence,created_at').eq('user_id',user.id).eq('quality','approved').eq('active',true);
   for(const [param,column] of [['task','task_type'],['source','correction_source']] as const){const value=params.get(param);if(value)query=query.eq(column,value);}
   if(params.has('confidence'))query=query.gte('model_confidence',confidence);
   for(const [param,operator] of [['from','gte'],['through','lte']] as const){const value=params.get(param);if(value){const date=new Date(value);if(!Number.isFinite(date.getTime()))return NextResponse.json({error:'Invalid date filter'},{status:400});query=query[operator]('created_at',date.toISOString());}}
@@ -17,7 +17,7 @@ export async function GET(request:NextRequest){try{
   if((result.data?.length??0)>1000)return NextResponse.json({error:'Narrow the date range to at most 1,000 examples; export was not truncated.'},{status:413});
   return new Response((result.data??[]).map(row=>JSON.stringify({task:row.task_type,input:row.input_text,output:row.final_label,provenance:row.correction_source,confidence:row.model_confidence})).join('\n')+((result.data?.length??0)?'\n':''),{headers:{...headers,'Content-Type':'application/x-ndjson','Content-Disposition':'attachment; filename="ass-training.jsonl"'}});
  }
- const [preference,examples]=await Promise.all([db.from('model_training_preferences').select('enabled').eq('user_id',user.id).maybeSingle(),db.from('model_training_examples').select('id,task_type,input_text,final_label,correction_source,quality,created_at').eq('user_id',user.id).order('created_at',{ascending:false}).limit(50)]);
+ const [preference,examples]=await Promise.all([db.from('model_training_preferences').select('enabled,retention_days').eq('user_id',user.id).maybeSingle(),db.from('model_training_examples').select('id,task_type,input_text,final_label,correction_source,quality,created_at').eq('user_id',user.id).eq('active',true).order('created_at',{ascending:false}).limit(50)]);
  if(preference.error||examples.error)throw Error();return NextResponse.json({enabled:preference.data?.enabled??false,examples:examples.data??[]}, {headers});
  }catch(error){return NextResponse.json({error:error instanceof ApiAuthError?error.message:'Training data unavailable'},{status:error instanceof ApiAuthError?error.status:500,headers});}}
 export async function POST(request:NextRequest){try{
@@ -29,3 +29,15 @@ export async function POST(request:NextRequest){try{
  }else return NextResponse.json({error:'Invalid request'},{status:400});
  return NextResponse.json({ok:true},{headers});
  }catch(error){return NextResponse.json({error:error instanceof ApiAuthError?error.message:'Training data update failed'},{status:error instanceof ApiAuthError?error.status:500,headers});}}
+export async function PATCH(request:NextRequest){try{
+ const user=await requireApiUser(request),db=getServiceSupabaseClient();if(!db)throw Error();const body=await request.json();const days=body.retentionDays;
+ if(![30,90,180,365,-1].includes(days))return NextResponse.json({error:'Retention must be 30, 90, 180, 365 days, or forever.'},{status:400});
+ const result=await db.from('model_training_preferences').upsert({user_id:user.id,retention_days:days,updated_at:new Date().toISOString()});if(result.error)throw result.error;
+ return NextResponse.json({ok:true},{headers});
+ }catch(error){return NextResponse.json({error:error instanceof ApiAuthError?error.message:'Retention update failed'},{status:error instanceof ApiAuthError?error.status:500,headers});}}
+export async function DELETE(request:NextRequest){try{
+ const user=await requireApiUser(request),db=getServiceSupabaseClient();if(!db)throw Error();const id=request.nextUrl.searchParams.get('id');
+ let query=db.from('model_training_examples').delete().eq('user_id',user.id);if(id)query=query.eq('id',id);
+ const result=await query.select('id');if(result.error)throw result.error;if(id&&!result.data?.length)return NextResponse.json({error:'Example not found'},{status:404});
+ return NextResponse.json({ok:true,deleted:result.data?.length??0},{headers});
+ }catch(error){return NextResponse.json({error:error instanceof ApiAuthError?error.message:'Training data deletion failed'},{status:error instanceof ApiAuthError?error.status:500,headers});}}

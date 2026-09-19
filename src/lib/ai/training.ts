@@ -1,4 +1,3 @@
-import {createHash} from 'node:crypto';
 import {getServiceSupabaseClient} from '@/lib/supabaseServer';
 
 // Candidates only: a correction is not automatically a reviewed training label.
@@ -12,8 +11,8 @@ export async function collectCorrection(userId:string,input:{sourceType:string;s
   const db=getServiceSupabaseClient();if(!db)return;
   const preference=await db.from('model_training_preferences').select('enabled').eq('user_id',userId).maybeSingle();
   if(preference.error||!preference.data?.enabled)return;
-  const sourceKey=createHash('sha256').update(JSON.stringify([input.sourceType,input.sourceId,input.originalText,input.correctedLabel])).digest('hex');
-  const result=await db.from('model_training_examples').upsert({user_id:userId,source_key:sourceKey,task_type:input.sourceType==='email'?'email_triage':input.sourceType==='email_draft'?'response_needed':'document_classification',input_text:input.originalText.slice(0,50000),context_json:{source_type:input.sourceType,user_action:input.userAction},model_prediction:input.predictedLabel??null,model_confidence:typeof input.confidence==='number'&&input.confidence>=0&&input.confidence<=1?input.confidence:null,final_label:input.correctedLabel,correction_source:'USER_CORRECTION',quality:'needs_review'},{onConflict:'user_id,source_key',ignoreDuplicates:true});
+  const taskType=input.sourceType==='email'?'email_triage':'document_classification';
+  const result=await db.rpc('collect_model_training_correction',{p_user_id:userId,p_source_type:input.sourceType,p_source_id:input.sourceId,p_task_type:taskType,p_input_text:input.originalText.slice(0,50000),p_context_json:{source_type:input.sourceType,user_action:input.userAction},p_model_prediction:input.predictedLabel??null,p_model_confidence:typeof input.confidence==='number'&&input.confidence>=0&&input.confidence<=1?input.confidence:null,p_final_label:input.correctedLabel});
   if(result.error)throw result.error;
  }catch{console.warn('[ai-training] Correction candidate collection failed');}
 }

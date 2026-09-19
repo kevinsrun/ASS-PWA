@@ -1,0 +1,2 @@
+create index model_training_revisions_example_idx on public.model_training_example_revisions(example_id);
+create index model_training_purge_runs_owner_idx on public.model_training_purge_runs(user_id,run_timestamp desc);

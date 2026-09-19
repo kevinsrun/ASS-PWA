@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import {loadSourceModule as load} from './load-source-module.mjs';
 let enabled=false,outage=false;const writes=[];
-load('@/lib/supabaseServer').getServiceSupabaseClient=()=>({from(table){return {select(){return this;},eq(key,value){assert.equal(key,'user_id');assert.equal(value,'owner');return this;},async maybeSingle(){return {data:{enabled},error:outage?Error('offline'):null};},async upsert(row,options){assert.equal(table,'model_training_examples');writes.push({row,options});return {error:null};}};}});
+load('@/lib/supabaseServer').getServiceSupabaseClient=()=>({from(){return {select(){return this;},eq(key,value){assert.equal(key,'user_id');assert.equal(value,'owner');return this;},async maybeSingle(){return {data:{enabled},error:outage?Error('offline'):null};}};},async rpc(name,args){assert.equal(name,'collect_model_training_correction');writes.push(args);return {data:'fixture',error:outage?Error('offline'):null};}});
 const {collectCorrection}=load('@/lib/ai/training');
 const input={sourceType:'email',sourceId:'source',originalText:'Synthetic application deadline',predictedLabel:'reference',correctedLabel:'task',confidence:0.5,userAction:'approve'};
 await collectCorrection('owner',input);assert.equal(writes.length,0,'disabled by default');
-enabled=true;await collectCorrection('owner',input);assert.equal(writes.length,1);assert.equal(writes[0].row.quality,'needs_review');assert.equal(writes[0].row.correction_source,'USER_CORRECTION');assert.equal(writes[0].row.user_id,'owner');assert(writes[0].options.ignoreDuplicates);
+enabled=true;await collectCorrection('owner',input);assert.equal(writes.length,1);assert.equal(writes[0].p_user_id,'owner');assert.equal(writes[0].p_source_id,'source');assert.equal(writes[0].p_task_type,'email_triage');assert.equal(writes[0].p_final_label,'task');
 await collectCorrection('owner',{...input,correctedLabel:null});await collectCorrection('owner',{...input,correctedLabel:'going'});await collectCorrection('owner',{...input,sourceType:'email_draft'});assert.equal(writes.length,1,'unlabeled, RSVP and generated-draft examples excluded');
 outage=true;await collectCorrection('owner',input);assert.equal(writes.length,1,'collection unavailable does not break user action');
-console.log('Training fixtures passed: explicit opt-in, owner scoping, review gate, provenance, duplicate preservation, unlabeled/RSVP exclusion, storage failure isolation. Mocked storage; no model training.');
+console.log('Training fixtures passed: explicit opt-in check, owner/source/task scoping, database RPC handoff, unlabeled/RSVP/generated-draft exclusion, storage failure isolation. Mocked storage; no model training.');
