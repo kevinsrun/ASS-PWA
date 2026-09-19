@@ -29,7 +29,7 @@ pdf += `xref\n0 6\n0000000000 65535 f \n${offsets
   .slice(1)
   .map((offset) => `${String(offset).padStart(10, "0")} 00000 n `)
   .join("\n")}\ntrailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
-const module = { exports: {} };
+const loadedModule = { exports: {} };
 new Function(
   "require",
   "module",
@@ -42,10 +42,10 @@ new Function(
   }).outputText,
 )(
   (name) => (name === "@/lib/officeText" ? {} : require(name)),
-  module,
-  module.exports,
+  loadedModule,
+  loadedModule.exports,
 );
-const text = await module.exports.extractDocumentText({
+const text = await loadedModule.exports.extractDocumentText({
   name: "Fixture.pdf",
   mimeType: "application/pdf",
   buffer: Buffer.from(pdf),

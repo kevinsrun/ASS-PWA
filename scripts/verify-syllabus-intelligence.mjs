@@ -194,8 +194,8 @@ const model = {
 function load(file) {
   file = path.resolve(file);
   if (cache.has(file)) return cache.get(file);
-  const module = { exports: {} };
-  cache.set(file, module.exports);
+  const loadedModule = { exports: {} };
+  cache.set(file, loadedModule.exports);
   const js = ts.transpileModule(fs.readFileSync(file, "utf8"), {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -236,11 +236,11 @@ function load(file) {
   };
   new Function("require", "module", "exports", js)(
     localRequire,
-    module,
-    module.exports,
+    loadedModule,
+    loadedModule.exports,
   );
-  cache.set(file, module.exports);
-  return module.exports;
+  cache.set(file, loadedModule.exports);
+  return loadedModule.exports;
 }
 const { analyzeFile } = load("src/lib/fileIntelligence.ts");
 const analysis = await analyzeFile({

@@ -67,7 +67,7 @@ const db = {
   from: (table) => new Query(table),
   rpc: async () => ({ data: true, error: null }),
 };
-const module = { exports: {} };
+const loadedModule = { exports: {} };
 new Function(
   "require",
   "module",
@@ -88,8 +88,8 @@ new Function(
             readStoredGoogleToken: async () => account,
           }
         : { getServiceSupabaseClient: () => db },
-  module,
-  module.exports,
+  loadedModule,
+  loadedModule.exports,
 );
 globalThis.fetch = async (url, options) => {
   calls.push({
@@ -112,7 +112,7 @@ globalThis.fetch = async (url, options) => {
   remote = [value];
   return Response.json(value);
 };
-const { syncGoogleTasks } = module.exports;
+const { syncGoogleTasks } = loadedModule.exports;
 await syncGoogleTasks("owner", "brown");
 assert.equal(remote.length, 1);
 assert.equal(remote[0].due, "2026-10-10T00:00:00Z");
