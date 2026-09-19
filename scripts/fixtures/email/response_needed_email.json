@@ -1,0 +1,1 @@
+{"message":{"id":"reply-1","subject":"Can you meet next week?","body":"Please reply with your availability for next week."},"expected":{"type":"meeting","actionRequired":true,"responseNeeded":true}}

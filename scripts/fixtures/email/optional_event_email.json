@@ -1,0 +1,1 @@
+{"message":{"id":"event-1","subject":"Optional department seminar","body":"You are invited to a seminar Tuesday at 4 PM. Attendance is optional."},"expected":{"type":"club_event","actionRequired":false,"responseNeeded":false}}

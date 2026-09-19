@@ -1,0 +1,11 @@
+import {NextRequest,NextResponse} from 'next/server';
+import {requireApiUser,ApiAuthError} from '@/lib/serverAuth';
+import {getServiceSupabaseClient} from '@/lib/supabaseServer';
+export const runtime='nodejs';const headers={'Cache-Control':'no-store'};
+export async function GET(request:NextRequest){try{const user=await requireApiUser(request),db=getServiceSupabaseClient();if(!db)throw Error();const result=await db.from('gmail_processing_queue').select('id,google_account_id,message_id,thread_id,history_id,notification_id,intake_request_id,status,attempts,next_attempt_at,last_error,last_provider_status,attempt_history,created_at,started_at,completed_at').eq('user_id',user.id).order('created_at',{ascending:false}).limit(100);if(result.error)throw result.error;return NextResponse.json({jobs:result.data??[]},{headers});}catch(error){return NextResponse.json({error:error instanceof ApiAuthError?error.message:'Queue unavailable'},{status:error instanceof ApiAuthError?error.status:500,headers});}}
+export async function POST(request:NextRequest){try{const user=await requireApiUser(request),db=getServiceSupabaseClient();if(!db)throw Error();const body=await request.json() as {action?:string;id?:string};
+ if(!['retry','retry_all','resolve'].includes(body.action??''))return NextResponse.json({error:'Invalid queue action'},{status:400});
+ let query=db.from('gmail_processing_queue').update(body.action==='resolve'?{status:'completed',completed_at:new Date().toISOString(),locked_at:null,locked_by:null,last_error:'Manually resolved'}:{status:'queued',attempts:0,next_attempt_at:new Date().toISOString(),completed_at:null,locked_at:null,locked_by:null,last_error:null}).eq('user_id',user.id);
+ if(body.action==='retry_all')query=query.in('status',['failed','dead_letter']);else{if(!body.id)return NextResponse.json({error:'Job id is required'},{status:400});query=query.eq('id',body.id).in('status',body.action==='resolve'?['failed','dead_letter']:['failed','dead_letter','retry_wait']);}
+ const result=await query.select('id');if(result.error)throw result.error;return NextResponse.json({ok:true,updated:result.data?.length??0},{headers});
+ }catch(error){return NextResponse.json({error:error instanceof ApiAuthError?error.message:'Queue update failed'},{status:error instanceof ApiAuthError?error.status:500,headers});}}

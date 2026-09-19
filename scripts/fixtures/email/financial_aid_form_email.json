@@ -1,0 +1,1 @@
+{"message":{"id":"aid-1","subject":"Action required: aid verification","body":"Complete the verification worksheet by September 30 to retain eligibility."},"expected":{"type":"financial_aid","actionRequired":true,"responseNeeded":false}}

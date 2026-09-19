@@ -1,9 +1,11 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import { decodeGmailPush, gmailPushConfiguration, persistGmailPush, processGmailPushQueue, validateGmailPush } from "@/lib/gmailPush";
+import {requestId,structuredLog} from "@/lib/structuredLog";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 export async function POST(request: NextRequest) {
+  const correlationId=requestId(request.headers),started=Date.now();
   if (!gmailPushConfiguration().ready) return NextResponse.json({ error: "Gmail push configuration is incomplete" }, { status: 503 });
   try { await validateGmailPush(request.headers.get("authorization")); }
   catch { return NextResponse.json({ error: "Invalid Pub/Sub identity" }, { status: 401 }); }
@@ -17,13 +19,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid Gmail notification" }, { status: 400 });
   }
   try {
-    const accounts = await persistGmailPush(notification);
+    const accounts = await persistGmailPush(notification,correlationId);
     after(async () => {
       try { await processGmailPushQueue(2); }
       catch (error) { console.error(JSON.stringify({ service: "gmail-push", stage: "worker-failed", message: error instanceof Error ? error.message : "Queue worker failed" })); }
     });
-    console.info(JSON.stringify({ service: "gmail-push", stage: "persisted", notificationId: notification.notificationId, historyId: notification.historyId, accounts }));
-    return NextResponse.json({ accepted: true });
+    structuredLog("info",{subsystem:"gmail_push",event:"persisted",request_id:correlationId,notification_id:notification.notificationId,history_id:notification.historyId,accounts,duration_ms:Date.now()-started});
+    return NextResponse.json({ accepted: true,requestId:correlationId });
   } catch (error) {
     console.error(JSON.stringify({ service: "gmail-push", stage: "persistence-failed", message: error instanceof Error ? error.message : "Persistence failed" }));
     return NextResponse.json({ error: "Notification could not be persisted; retry required" }, { status: 503 });

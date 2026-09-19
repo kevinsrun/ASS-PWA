@@ -1,0 +1,1 @@
+{"message":{"id":"deadline-1","subject":"Financial aid form due Friday","body":"Please submit the verification form by 5:00 PM Friday."},"expected":{"type":"deadline","actionRequired":true,"responseNeeded":false}}

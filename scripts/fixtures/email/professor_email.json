@@ -1,0 +1,1 @@
+{"message":{"id":"professor-1","subject":"Please review the attached draft","body":"Could you send comments before our meeting?","from":"professor@brown.edu"},"expected":{"type":"task","actionRequired":true,"responseNeeded":true}}
