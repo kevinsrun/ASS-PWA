@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import ts from "typescript";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -34,7 +36,10 @@ new Function(
   "require",
   "module",
   "exports",
-  ts.transpileModule(fs.readFileSync("src/lib/documentText.ts", "utf8"), {
+  ts.transpileModule(fs.readFileSync("src/lib/documentText.ts", "utf8").replace(
+    "import.meta.url",
+    JSON.stringify(pathToFileURL(path.resolve("src/lib/documentText.ts")).href),
+  ), {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
       target: ts.ScriptTarget.ES2022,
