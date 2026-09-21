@@ -1,4 +1,13 @@
 import { extractOfficeText } from "@/lib/officeText";
+
+async function nodePdfParser() {
+  const { createRequire } = await import("node:module");
+  const requireFromApp = createRequire(`${process.cwd()}/package.json`);
+  // The CommonJS condition initializes pdf-parse's Node canvas polyfills,
+  // including DOMMatrix. Next's generic dynamic import can select the web build.
+  return requireFromApp("pdf-parse") as typeof import("pdf-parse");
+}
+
 export async function extractDocumentText(file: {
   name: string;
   mimeType: string;
@@ -9,7 +18,7 @@ export async function extractDocumentText(file: {
   if (file.mimeType.includes("officedocument"))
     return extractOfficeText(file.buffer, file.mimeType);
   if (file.mimeType === "application/pdf") {
-    const { PDFParse } = await import("pdf-parse");
+    const { PDFParse } = await nodePdfParser();
     const parser = new PDFParse({
       data: new Uint8Array(file.buffer),
       isEvalSupported: false,
