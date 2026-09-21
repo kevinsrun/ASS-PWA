@@ -15,6 +15,8 @@
     "verify:personalization": "node scripts/verify-personalization.mjs",
     "verify:reliability": "node scripts/verify-durable-gmail.mjs && node scripts/verify-ai-training.mjs && node scripts/verify-training-export.mjs",
     "verify:model-pipeline": "node scripts/verify-model-pipeline.mjs && python3 -m py_compile scripts/ai/train.py",
+    "verify:tournament": "node scripts/verify-tournament.mjs",
+    "ai:tournament": "node scripts/ai/tournament.mjs",
     "ai:dataset:build": "node scripts/ai/build-dataset.mjs",
     "ai:dataset:validate": "node scripts/ai/validate-dataset.mjs",
     "ai:train": "node scripts/ai/train-agent.mjs",
