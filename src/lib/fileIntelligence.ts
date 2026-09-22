@@ -129,8 +129,48 @@ function safeDate(value: unknown) {
     return null;
   return Number.isNaN(Date.parse(source)) ? null : source;
 }
-function cleanJson(text: string) {
-  return text.replace(/^```json\s*|\s*```$/g, "").trim();
+export function parseModelJson(text: string, stage = "analysis") {
+  const source = text.trim();
+  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)(?:```|$)/i);
+  const candidate = (fenced?.[1] ?? source).trim();
+  const start = candidate.search(/[\[{]/);
+  if (start < 0)
+    throw new Error(`Model returned no JSON object (${stage})`);
+  const opener = candidate[start];
+  const closer = opener === "{" ? "}" : "]";
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  let end = -1;
+  for (let index = start; index < candidate.length; index += 1) {
+    const character = candidate[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      continue;
+    }
+    if (character === opener) depth += 1;
+    if (character === closer) {
+      depth -= 1;
+      if (depth === 0) {
+        end = index + 1;
+        break;
+      }
+    }
+  }
+  if (end < 0 || quoted || depth !== 0)
+    throw new Error(`Model returned truncated JSON (${stage})`);
+  try {
+    return JSON.parse(candidate.slice(start, end)) as unknown;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "invalid JSON";
+    throw new Error(`Model returned malformed JSON (${stage}): ${detail}`);
+  }
 }
 
 const stringSchema: Schema = { type: SchemaType.STRING };
@@ -263,6 +303,7 @@ async function modelJson(
   parts: Parameters<ReturnType<typeof getGeminiModel>["generateContent"]>[0],
   schema: Schema,
   thinkingLevel: "low" | "high" = "high",
+  stage = "analysis",
 ) {
   let response;
   try {
@@ -284,7 +325,7 @@ async function modelJson(
       timeout: 45_000,
     });
   }
-  const parsed: unknown = JSON.parse(cleanJson(response.response.text()));
+  const parsed: unknown = parseModelJson(response.response.text(), stage);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("Gemini returned an invalid analysis object");
   return parsed as Record<string, unknown>;
@@ -310,7 +351,25 @@ async function analyzeFileUncached(
   userId?: string,
 ): Promise<FileAnalysis> {
   const analysisStartedAt = Date.now();
+  const attemptId = createHash("sha256")
+    .update(`${file.name}:${file.buffer.length}:${analysisStartedAt}`)
+    .digest("hex")
+    .slice(0, 16);
+  const log = (stage: string, extra: Record<string, unknown> = {}) =>
+    console.info(
+      JSON.stringify({
+        service: "file-intelligence",
+        stage,
+        attemptId,
+        fileName: file.name,
+        byteSize: file.buffer.length,
+        userId: userId ?? null,
+        ...extra,
+      }),
+    );
+  log("started");
   const text = await extractDocumentText(file);
+  log("extracted", { extractionSize: text?.length ?? null });
   if (text && text.length > 180_000)
     throw new Error(
       "Document exceeds the reliable analysis size; the original file is retained. Import a smaller section.",
@@ -329,7 +388,8 @@ async function analyzeFileUncached(
         data: file.buffer.toString("base64"),
       },
     });
-  const document = await modelJson(parts, segmentationSchema, "low");
+  const document = await modelJson(parts, segmentationSchema, "low", "classification");
+  log("classified", { classification: document.classification });
   if (
     !fileClassifications.includes(document.classification as FileClassification)
   )
@@ -447,7 +507,14 @@ async function analyzeFileUncached(
         },
       ],
       schema,
+      "high",
+      "extraction",
     );
+    log("items-parsed", {
+      batch: index / 4 + 1,
+      batchSections: batch.length,
+      itemCount: Array.isArray(result.items) ? result.items.length : null,
+    });
     if (classification === "syllabus") {
       if (Date.now() - analysisStartedAt > 200_000)
         throw new Error(
@@ -460,6 +527,8 @@ async function analyzeFileUncached(
           },
         ],
         schema,
+        "high",
+        "review",
       );
     }
     if (!Array.isArray(result.items) || result.items.length > 80)
@@ -590,6 +659,7 @@ async function analyzeFileUncached(
   ];
   if (classification === "syllabus")
     Object.assign(structured, structuredSyllabus(unique, document));
+  log("completed", { classification, itemCount: unique.length });
   return {
     sourceText,
     classification,
