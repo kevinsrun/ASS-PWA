@@ -242,7 +242,17 @@ function load(file) {
   cache.set(file, loadedModule.exports);
   return loadedModule.exports;
 }
-const { analyzeFile } = load("src/lib/fileIntelligence.ts");
+const { analyzeFile, parseModelJson } = load("src/lib/fileIntelligence.ts");
+assert.deepEqual(
+  parseModelJson('```json\n{"items":[{"title":"Lab"}]}\n```\nAnalysis complete.', "fixture"),
+  { items: [{ title: "Lab" }] },
+  "fenced JSON with trailing prose must be accepted",
+);
+assert.throws(
+  () => parseModelJson('{"items":[{"title":"Lab"}]', "fixture"),
+  /truncated JSON/,
+  "truncated model output must expose a diagnostic",
+);
 const analysis = await analyzeFile({
   name: "Syllabus.txt",
   mimeType: "text/plain",

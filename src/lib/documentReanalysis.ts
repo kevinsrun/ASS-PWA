@@ -6,10 +6,14 @@ import { ApiAuthError } from "@/lib/serverAuth";
 import { downloadDriveFile } from "@/lib/googleDrive";
 import { indexDocument } from "@/lib/documentGrounding";
 import { fulfillDocumentActions } from "@/lib/documentFulfillment";
+import { randomUUID } from "crypto";
 export async function reanalyzeSource(
   userId: string,
   body: { fileId?: string; sourceId?: string },
 ) {
+  let fileId: string | null = null;
+  let sourceId: string | null = body.sourceId ?? null;
+  const attemptId = randomUUID();
   let lease: {
     table: string;
     id: string;
@@ -24,8 +28,8 @@ export async function reanalyzeSource(
       throw new ApiAuthError("Choose one imported file or text source", 400);
     const db = getServiceSupabaseClient();
     if (!db) throw new Error("A Supabase server key is not configured");
-    let fileId: string | null = null,
-      sourceId: string | null = body.sourceId ?? null;
+    fileId = null;
+    sourceId = body.sourceId ?? null;
     type Original = { name: string; mimeType: string; buffer: Buffer };
     let fetchOriginal: (() => Promise<Original>) | undefined;
     let version: string;
@@ -143,6 +147,17 @@ export async function reanalyzeSource(
     leaseClaimed = true;
     if (!fetchOriginal) throw new Error("Original content resolver is missing");
     const input = await fetchOriginal();
+    console.info(JSON.stringify({
+      service: "document-reanalysis",
+      stage: "source-loaded",
+      attemptId,
+      userId,
+      fileId,
+      sourceId,
+      byteSize: input.buffer.length,
+      mimeType: input.mimeType,
+      mode: "reanalysis",
+    }));
     let query = db.from("extraction_items").select("*").eq("user_id", user.id);
     query = fileId
       ? query.eq("imported_file_id", fileId)
@@ -150,6 +165,17 @@ export async function reanalyzeSource(
     const { data: existing, error: existingError } = await query;
     if (existingError) throw existingError;
     const analysis = await analyzeFile(input, user.id,{bypassCache:true});
+    console.info(JSON.stringify({
+      service: "document-reanalysis",
+      stage: "analysis-complete",
+      attemptId,
+      userId,
+      fileId,
+      sourceId,
+      itemCount: analysis.items.length,
+      extractionSize: analysis.sourceText?.length ?? null,
+      mode: "reanalysis",
+    }));
     const { data: extraction, error } = await db
       .from("file_extractions")
       .insert({
@@ -271,6 +297,7 @@ export async function reanalyzeSource(
       if (error) throw error;
     }
     return {
+      attemptId,
       updated: merge.updates.length,
       added: merge.additions.length,
       preserved: merge.preserved,
@@ -312,6 +339,13 @@ export async function reanalyzeSource(
       JSON.stringify({
         service: "document-reanalysis",
         stage: "failed",
+        attemptId,
+        userId,
+        fileId,
+        sourceId,
+        mode: "reanalysis",
+        errorCategory:
+          error instanceof ApiAuthError ? "request" : "analysis_or_persistence",
         message: error instanceof Error ? error.message : "Re-analysis failed",
       }),
     );

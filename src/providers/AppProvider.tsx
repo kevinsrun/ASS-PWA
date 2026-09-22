@@ -382,6 +382,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         streak: 0,
         category: details.category ?? "personal",
         frequency: details.frequency ?? "daily",
+        targetType: details.targetType ?? "binary",
+        targetAmount: details.targetAmount ?? 1,
+        unit: details.unit ?? "",
+        preferredDays: details.preferredDays ?? [],
+        paused: details.paused ?? false,
         timePreference: details.timePreference ?? "anytime",
         notes: details.notes ?? "",
         skipDays: details.skipDays ?? [],
@@ -398,7 +403,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (habit.id !== id) return habit;
 
         if (habit.lastCompleted === today) {
-          return habit;
+          return {
+            ...habit,
+            lastCompleted: null,
+            streak: Math.max(0, habit.streak - 1),
+            completionHistory: (habit.completionHistory ?? []).filter(
+              (date) => date !== today,
+            ),
+          };
         }
 
         const yesterday = new Date();
@@ -437,6 +449,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         id: Date.now(),
         date: details.date ?? new Date().toISOString().split("T")[0],
         content: trimmed,
+        title: details.title ?? "",
+        updatedAt: new Date().toISOString(),
         mood: details.mood ?? "",
         energy: details.energy ?? 3,
         themes: details.themes ?? [],
@@ -455,7 +469,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   ) {
     setJournals((prev) =>
       prev.map((journal) =>
-        journal.id === id ? { ...journal, ...updates } : journal,
+        journal.id === id
+          ? { ...journal, ...updates, updatedAt: new Date().toISOString() }
+          : journal,
       ),
     );
   }
