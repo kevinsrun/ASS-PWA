@@ -133,10 +133,32 @@ export async function processGmailPushQueue(maxAccounts = 2, budgetMs=150_000) {
       await createAssistantAction(event.user_id,{sourceKind:"integration",sourceId:`gmail-queue:${event.google_account_id}`,actionType:"connection_attention",title:"Reconnect Gmail",summary:"Queued Gmail processing stopped because the connection is unavailable.",priority:"high",payload:{googleAccountId:event.google_account_id,recommendedAction:"Reconnect Gmail in Profile"}});
       continue;
     }
-    if (!result.failures.length) {
+    if (!result.failures.length && !result.backlogRemaining) {
       const { error: completionError } = await db.rpc("complete_gmail_pushes", { p_user_id: event.user_id, p_account_id: event.google_account_id });
       if (completionError) throw completionError;
       structuredLog("info",{subsystem:"gmail_queue",event:"job_completed",request_id:event.intake_request_id,run_id:runId,job_id:jobId,user_id:event.user_id,duration_ms:Date.now()-started});
+      continue;
+    }
+    if (!result.failures.length && result.backlogRemaining) {
+      const released = await db.rpc("finish_gmail_job_batch", {
+        p_user_id: event.user_id,
+        p_account_id: event.google_account_id,
+        p_worker_id: worker,
+        p_status: "retry_wait",
+        p_error: "Gmail backlog remains after the bounded processing budget",
+        p_provider_status: null,
+        p_next_attempt_at: new Date(Date.now() + 60_000).toISOString(),
+      });
+      if (released.error) throw released.error;
+      structuredLog("warn", {
+        subsystem: "gmail_queue",
+        event: "job_deferred_backlog",
+        request_id: event.intake_request_id,
+        run_id: runId,
+        job_id: jobId,
+        user_id: event.user_id,
+        duration_ms: Date.now() - started,
+      });
       continue;
     }
     const failure=classifyGmailFailure(result.failures.join("; "));

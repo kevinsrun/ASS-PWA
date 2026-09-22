@@ -1,5 +1,6 @@
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
+import { calculateObservedCashflow } from "@/lib/financeCalculations";
 
 type Assumptions = {
   expected_scholarships: number;
@@ -60,9 +61,13 @@ export async function getFinanceDashboard(userId: string) {
     if (String(account.type) === "credit") return total - number(account.current_balance);
     return total;
   }, 0);
-  const observedMonthlySpend = transactions
-    .filter((transaction) => number(transaction.amount) > 0 && !transaction.pending && String(transaction.category) !== "TRANSFER_IN")
-    .reduce((total, transaction) => total + number(transaction.amount), 0) / 3;
+  const observed = calculateObservedCashflow(
+    transactions.map((transaction) => ({
+      ...transaction,
+      amount: number(transaction.amount),
+    })),
+  );
+  const observedMonthlySpend = observed.monthlyExpenses;
   const fixedMonthly = assumptions.monthly_tuition + assumptions.monthly_housing + assumptions.monthly_food + assumptions.monthly_transportation + assumptions.monthly_books;
   const monthlyBurn = Math.max(observedMonthlySpend, fixedMonthly);
   const expectedInflows = assumptions.expected_scholarships + assumptions.expected_paychecks + assumptions.expected_family_support;
@@ -95,9 +100,23 @@ export async function getFinanceDashboard(userId: string) {
     .slice(0, 5)
     .map((transaction) => ({ id: transaction.id, name: transaction.merchant_name ?? transaction.name, amount: number(transaction.amount), date: transaction.occurred_on }));
 
+  const latestSync = (itemsResult.data ?? [])
+    .map((item) => item.last_successful_sync_at)
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? null;
+  const syncState = (itemsResult.data ?? []).some((item) => item.status === "error")
+    ? "SYNC_ERROR"
+    : (itemsResult.data ?? []).length === 0
+      ? "NOT_CONFIGURED"
+      : !latestSync || Date.parse(latestSync) < Date.now() - 24 * 60 * 60_000
+        ? "STALE"
+        : "VERIFIED";
+
   return {
     configured: true,
-    connected: (itemsResult.data ?? []).length > 0,
+    connected: syncState === "VERIFIED" || syncState === "STALE",
+    health: { state: syncState, lastSuccessfulSyncAt: latestSync },
     institutions: itemsResult.data ?? [],
     accounts,
     assumptions,
@@ -113,6 +132,12 @@ export async function getFinanceDashboard(userId: string) {
       recommendedWeeklySpend,
       requiredWeeklyIncome,
       savingsProgress: assumptions.savings_target > 0 ? Math.min(1, Math.max(0, cash / assumptions.savings_target)) : null,
+      provenance: {
+        formula: "available cash + expected inflows - emergency reserve; burn excludes pending and internal transfer/card-payment rows",
+        calculationAt: new Date().toISOString(),
+        includedTransactionIds: observed.eligibleTransactionIds,
+        excludedTransactionIds: observed.excludedTransactionIds,
+      },
     },
   };
 }
