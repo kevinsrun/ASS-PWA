@@ -59,6 +59,9 @@ type HabitRow = {
   streak?: number | string | null;
   category?: Habit["category"] | null;
   frequency?: Habit["frequency"] | null;
+  target_type?: Habit["targetType"] | null;
+  target_amount?: number | string | null;
+  target_unit?: string | null;
   time_preference?: Habit["timePreference"] | null;
   notes?: string | null;
   skip_days?: string[] | null;
@@ -69,6 +72,8 @@ type JournalRow = {
   local_id?: number | string | null;
   date?: string | null;
   content?: string | null;
+  title?: string | null;
+  updated_at?: string | null;
   mood?: string | null;
   energy?: number | string | null;
   themes?: string[] | null;
@@ -192,6 +197,9 @@ export async function loadCloudSnapshot(
       streak: Number(habit.streak ?? 0),
       category: habit.category ?? "personal",
       frequency: habit.frequency ?? "daily",
+      targetType: habit.target_type ?? "binary",
+      targetAmount: Number(habit.target_amount ?? 1),
+      unit: habit.target_unit ?? "",
       timePreference: habit.time_preference ?? "anytime",
       notes: habit.notes ?? "",
       skipDays: habit.skip_days ?? [],
@@ -201,6 +209,8 @@ export async function loadCloudSnapshot(
       id: Number(journal.local_id),
       date: journal.date ?? new Date().toISOString().split("T")[0],
       content: journal.content ?? "",
+      title: journal.title ?? "",
+      updatedAt: journal.updated_at ?? undefined,
       mood: journal.mood ?? "",
       energy: Number(journal.energy ?? 3),
       themes: journal.themes ?? [],
@@ -372,6 +382,9 @@ function habitToRow(habit: Habit) {
     streak: habit.streak,
     category: habit.category ?? "personal",
     frequency: habit.frequency ?? "daily",
+    target_type: habit.targetType ?? "binary",
+    target_amount: habit.targetAmount ?? 1,
+    target_unit: habit.unit ?? "",
     time_preference: habit.timePreference ?? "anytime",
     notes: habit.notes ?? "",
     skip_days: habit.skipDays ?? [],
@@ -384,6 +397,7 @@ function journalToRow(journal: JournalEntry) {
     local_id: journal.id,
     date: journal.date,
     content: journal.content,
+    title: journal.title ?? "",
     mood: journal.mood ?? "",
     energy: journal.energy ?? 3,
     themes: journal.themes ?? [],

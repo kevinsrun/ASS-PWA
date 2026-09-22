@@ -11,6 +11,7 @@
     "verify:syllabus-calendar": "node scripts/verify-syllabus-calendar.mjs",
     "verify:intelligence": "node scripts/verify-intelligence-fixtures.mjs",
     "verify:calendar-integrity": "node scripts/verify-calendar-integrity-fixtures.mjs",
+    "verify:persistence": "node scripts/verify-journal-habit-persistence.mjs",
     "verify:chat-actions": "node scripts/verify-chat-actions.mjs",
     "verify:personalization": "node scripts/verify-personalization.mjs",
     "verify:reliability": "node scripts/verify-durable-gmail.mjs && node scripts/verify-ai-training.mjs && node scripts/verify-training-export.mjs",

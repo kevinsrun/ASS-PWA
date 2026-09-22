@@ -38,6 +38,10 @@ create table if not exists public.habits (
   streak integer default 0,
   category text default 'personal',
   frequency text default 'daily',
+  target_type text not null default 'binary'
+    check (target_type in ('binary', 'count', 'duration', 'frequency')),
+  target_amount numeric not null default 1 check (target_amount > 0),
+  target_unit text not null default '',
   time_preference text default 'anytime',
   notes text default '',
   skip_days jsonb default '[]'::jsonb,
@@ -61,6 +65,7 @@ create table if not exists public.journal_entries (
   local_id bigint not null,
   date date not null,
   content text not null,
+  title text not null default '',
   mood text default '',
   energy integer default 3,
   themes jsonb default '[]'::jsonb,
