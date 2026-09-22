@@ -306,25 +306,34 @@ async function modelJson(
   stage = "analysis",
 ) {
   let response;
-  try {
-    response = await getGeminiModel(
-      thinkingLevel === "low" ? GEMINI_MODELS.fast : GEMINI_MODELS.reasoning,
-      schema,
-      thinkingLevel,
-    ).generateContent(parts, {
-      timeout: 45_000,
-    });
-  } catch (error) {
-    if (!String(error).includes("429")) throw error;
-    rotateGeminiKey();
-    response = await getGeminiModel(
-      thinkingLevel === "low" ? GEMINI_MODELS.fast : GEMINI_MODELS.reasoning,
-      schema,
-      thinkingLevel,
-    ).generateContent(parts, {
-      timeout: 45_000,
-    });
+  const model =
+    thinkingLevel === "low" ? GEMINI_MODELS.fast : GEMINI_MODELS.reasoning;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      response = await getGeminiModel(model, schema, thinkingLevel).generateContent(
+        parts,
+        { timeout: 45_000 },
+      );
+      break;
+    } catch (error) {
+      const message = String(error);
+      const status = Number((error as { status?: number })?.status);
+      const transient = status === 429 || status === 503 || /\b(?:429|503)\b/.test(message);
+      if (!transient || attempt === 2) throw error;
+      rotateGeminiKey();
+      console.warn(
+        JSON.stringify({
+          service: "file-intelligence",
+          stage: "model-retry",
+          model,
+          attempt,
+          status: status || null,
+          reason: status === 503 ? "provider_unavailable" : "rate_limited",
+        }),
+      );
+    }
   }
+  if (!response) throw new Error(`Gemini returned no response (${stage})`);
   const parsed: unknown = parseModelJson(response.response.text(), stage);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("Gemini returned an invalid analysis object");

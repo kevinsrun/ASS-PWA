@@ -2,9 +2,21 @@ import { extractOfficeText } from "@/lib/officeText";
 import { createRequire } from "node:module";
 
 const requireFromApp = createRequire(import.meta.url);
-// The CommonJS condition initializes pdf-parse's Node canvas polyfills,
-// including DOMMatrix. Next's generic dynamic import can select the web build.
-const nodePdfParser = () => requireFromApp("pdf-parse") as typeof import("pdf-parse");
+// Install the Node canvas globals before loading pdf-parse. Its package-root
+// CommonJS entry uses these globals when PDF.js initializes in a serverless
+// runtime; without them the O-Chem PDF path can fail with DOMMatrix errors.
+const nodePdfParser = () => {
+  const canvas = requireFromApp("@napi-rs/canvas") as {
+    DOMMatrix?: unknown;
+    ImageData?: unknown;
+    Path2D?: unknown;
+  };
+  const runtime = globalThis as Record<string, unknown>;
+  runtime.DOMMatrix ??= canvas.DOMMatrix;
+  runtime.ImageData ??= canvas.ImageData;
+  runtime.Path2D ??= canvas.Path2D;
+  return requireFromApp("pdf-parse") as typeof import("pdf-parse");
+};
 
 export async function extractDocumentText(file: {
   name: string;
