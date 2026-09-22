@@ -162,6 +162,11 @@ export type Habit = {
   streak: number;
   category?: PlanCategory;
   frequency?: "daily" | "weekdays" | "weekends" | "weekly";
+  targetType?: "binary" | "count" | "duration" | "frequency";
+  targetAmount?: number;
+  unit?: string;
+  preferredDays?: number[];
+  paused?: boolean;
   timePreference?: "morning" | "afternoon" | "evening" | "anytime";
   notes?: string;
   skipDays?: string[];
@@ -214,6 +219,8 @@ export type JournalEntry = {
   id: number;
   date: string;
   content: string;
+  title?: string;
+  updatedAt?: string;
   mood?: string;
   energy?: number;
   themes?: string[];
