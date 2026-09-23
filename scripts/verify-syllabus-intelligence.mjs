@@ -26,6 +26,7 @@ Course description
 We study physical models of life. The first experiment ran in 1998.`;
 let calls = 0,
   dbEnabled = false;
+const slowProvider = process.argv.includes("--slow-provider");
 const dbRows = {
   file_extractions: [],
   document_chunks: [],
@@ -105,6 +106,7 @@ const conversions = [];
 const model = {
   generateContent: async (parts) => {
     calls++;
+    if (slowProvider) await new Promise((resolve) => setTimeout(resolve, 25));
     const prompt = parts[0].text;
     if (prompt.startsWith("Identify document"))
       return {
