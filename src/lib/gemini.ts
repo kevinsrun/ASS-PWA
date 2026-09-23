@@ -9,10 +9,41 @@ const keys =
 
 let currentKeyIndex = 0;
 
+export type GeminiFailureCategory =
+  | "QUOTA_RATE_LIMIT"
+  | "TRANSIENT_MODEL_UNAVAILABLE"
+  | "AUTH_CONFIGURATION_ERROR"
+  | "PROVIDER_TIMEOUT"
+  | "UNKNOWN_PROVIDER_ERROR";
+
+export function classifyGeminiFailure(error: unknown): {
+  category: GeminiFailureCategory;
+  status: number | null;
+  retryable: boolean;
+  coolKey: boolean;
+} {
+  const message = String(error);
+  const status = Number((error as { status?: number })?.status) || Number(message.match(/\b(401|403|408|429|500|502|503|504)\b/)?.[1]) || null;
+  if (status === 401 || status === 403 || /invalid api key|api key.*(?:invalid|revoked)|unauthori[sz]ed|forbidden/i.test(message))
+    return { category: "AUTH_CONFIGURATION_ERROR", status, retryable: false, coolKey: false };
+  if (status === 429 || /quota|rate limit|resource exhausted|too many requests/i.test(message))
+    return { category: "QUOTA_RATE_LIMIT", status, retryable: true, coolKey: true };
+  if (status === 503 || status === 500 || status === 502 || status === 504 || /service unavailable|temporarily unavailable|high demand/i.test(message))
+    return { category: "TRANSIENT_MODEL_UNAVAILABLE", status, retryable: true, coolKey: false };
+  if (status === 408 || /timeout|timed out|deadline exceeded|socket|fetch failed/i.test(message))
+    return { category: "PROVIDER_TIMEOUT", status, retryable: true, coolKey: false };
+  return { category: "UNKNOWN_PROVIDER_ERROR", status, retryable: false, coolKey: false };
+}
+
+export function getGeminiKeySlot() {
+  return currentKeyIndex;
+}
+
 export function getGeminiModel(
   model = GEMINI_MODELS.reasoning,
   responseSchema?: Schema,
   thinkingLevel: "low" | "high" = "high",
+  options: { allowModelFallback?: boolean } = {},
 ) {
   if (keys.length === 0) {
     throw new Error("No Gemini API keys configured");
@@ -53,6 +84,7 @@ export function getGeminiModel(
       const status = (error as { status?: number })?.status;
       const fallback = GEMINI_MODELS.fallback;
       if (
+        options.allowModelFallback !== true ||
         model === fallback ||
         !model.includes("flash") ||
         !(
