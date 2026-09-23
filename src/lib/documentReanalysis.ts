@@ -147,6 +147,11 @@ export async function reanalyzeSource(
     leaseClaimed = true;
     if (!fetchOriginal) throw new Error("Original content resolver is missing");
     const input = await fetchOriginal();
+    if (!input.buffer.length)
+      throw new ApiAuthError(
+        "The stored syllabus source is empty; upload the original syllabus again before re-analysis.",
+        409,
+      );
     console.info(JSON.stringify({
       service: "document-reanalysis",
       stage: "source-loaded",
@@ -155,6 +160,12 @@ export async function reanalyzeSource(
       fileId,
       sourceId,
       byteSize: input.buffer.length,
+      sourceKind: fileId
+        ? "supabase_storage_file"
+        : sourceId && body.sourceId
+          ? "stored_import_text_or_drive"
+          : "unknown",
+      sourceTextAvailable: input.buffer.length > 0,
       mimeType: input.mimeType,
       mode: "reanalysis",
     }));

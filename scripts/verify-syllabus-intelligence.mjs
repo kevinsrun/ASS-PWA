@@ -242,7 +242,36 @@ function load(file) {
   cache.set(file, loadedModule.exports);
   return loadedModule.exports;
 }
-const { analyzeFile, parseModelJson } = load("src/lib/fileIntelligence.ts");
+const {
+  analyzeFile,
+  parseModelJson,
+  prepareDocumentSections,
+  MAX_DOCUMENT_SECTION_SIZE,
+  GEMINI_ANALYSIS_TIMEOUT_MS,
+} = load("src/lib/fileIntelligence.ts");
+const pathologicalPdfText =
+  "Physics 1610 " + "schedule and assignment details ".repeat(900);
+const boundedSections = prepareDocumentSections(pathologicalPdfText);
+assert.ok(
+  boundedSections.length > 1,
+  "one-line PDF extraction must be split into bounded segments",
+);
+assert.ok(
+  boundedSections.every(
+    (section) => section.text.length <= MAX_DOCUMENT_SECTION_SIZE,
+  ),
+  "reanalysis segments must remain bounded",
+);
+assert.throws(
+  () => prepareDocumentSections(" \n\t "),
+  /source text is empty/,
+  "empty stored source must expose a precise reanalysis diagnostic",
+);
+assert.equal(
+  GEMINI_ANALYSIS_TIMEOUT_MS,
+  90_000,
+  "model timeout must leave room below the 300s route limit",
+);
 assert.deepEqual(
   parseModelJson('```json\n{"items":[{"title":"Lab"}]}\n```\nAnalysis complete.', "fixture"),
   { items: [{ title: "Lab" }] },

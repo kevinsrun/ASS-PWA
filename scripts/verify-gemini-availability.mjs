@@ -102,6 +102,28 @@ assert.equal(
   ).coolKey,
   true,
 );
+const aborted = Object.assign(new Error("This operation was aborted"), {
+  name: "AbortError",
+});
+assert.equal(
+  loaded.exports.classifyGeminiFailure(aborted, {
+    elapsedMs: 90_000,
+    timeoutMs: 90_000,
+  }).category,
+  "PROVIDER_TIMEOUT",
+);
+assert.equal(
+  loaded.exports.classifyGeminiFailure(aborted, {
+    abortSource: "queue",
+  }).category,
+  "QUEUE_CANCELLED",
+);
+assert.equal(
+  loaded.exports.classifyGeminiFailure(aborted, {
+    abortSource: "caller",
+  }).retryable,
+  false,
+);
 console.log(
   "Gemini availability fallback is bounded, preserves schemas, and never masks credentials, permission or quota failures.",
 );
