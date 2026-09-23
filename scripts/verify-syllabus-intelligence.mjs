@@ -27,6 +27,9 @@ We study physical models of life. The first experiment ran in 1998.`;
 let calls = 0,
   dbEnabled = false;
 const slowProvider = process.argv.includes("--slow-provider");
+const providerFallback = process.argv.includes("--provider-fallback");
+let selectedSlot = 0;
+const traversedSlots = [];
 const dbRows = {
   file_extractions: [],
   document_chunks: [],
@@ -108,6 +111,19 @@ const model = {
     calls++;
     if (slowProvider) await new Promise((resolve) => setTimeout(resolve, 25));
     const prompt = parts[0].text;
+    if (
+      providerFallback &&
+      prompt.includes("Sections: ") &&
+      !prompt.includes("First extraction:") &&
+      selectedSlot < 7
+    ) {
+      traversedSlots.push(selectedSlot);
+      throw Object.assign(new Error("Model temporarily unavailable"), {
+        status: 503,
+      });
+    }
+    if (providerFallback && prompt.includes("Sections: "))
+      traversedSlots.push(selectedSlot);
     if (prompt.startsWith("Identify document"))
       return {
         response: {
@@ -212,16 +228,30 @@ function load(file) {
             getGeminiModel: () => model,
             getGeminiKeyPoolDiagnostics: () => ({
               environment: "test",
-              configuredKeySlots: 1,
-              usableKeySlots: 1,
+              configuredKeySlots: providerFallback ? 8 : 1,
+              usableKeySlots: providerFallback ? 8 : 1,
               missingSlots: [],
               duplicateKeyFingerprints: [],
-              keyFingerprints: ["fixture"],
-              projectSlots: [null],
+              keyFingerprints: providerFallback
+                ? Array.from({ length: 8 }, (_, index) => `fixture-${index}`)
+                : ["fixture"],
+              projectSlots: providerFallback
+                ? Array.from({ length: 8 }, (_, index) => `project-${index}`)
+                : [null],
             }),
-            getGeminiKeyPoolSize: () => 1,
-            getGeminiKeySlot: () => 0,
-            selectGeminiKeySlot: () => {},
+            getGeminiKeyPoolSize: () => (providerFallback ? 8 : 1),
+            getGeminiKeySlot: () => selectedSlot,
+            classifyGeminiFailure: (error) => ({
+              category: error?.status === 503
+                ? "TRANSIENT_MODEL_UNAVAILABLE"
+                : "UNKNOWN_PROVIDER_ERROR",
+              status: error?.status ?? null,
+              retryable: error?.status === 503,
+              coolKey: false,
+            }),
+            selectGeminiKeySlot: (slot) => {
+              selectedSlot = slot;
+            },
             rotateGeminiKey: () => {},
           };
     if (name === "@/lib/supabaseServer")
@@ -264,20 +294,27 @@ const {
   parseModelJson,
   prepareDocumentSections,
   MAX_DOCUMENT_SECTION_SIZE,
+  MAX_DOCUMENT_SECTIONS_SAFETY_FUSE,
   GEMINI_ANALYSIS_TIMEOUT_MS,
 } = load("src/lib/fileIntelligence.ts");
-const pathologicalPdfText =
-  "Physics 1610 " + "schedule and assignment details ".repeat(900);
+const pathologicalPdfText = Array.from(
+  { length: 27 },
+  (_, index) => `Physics 1610 section ${index + 1} ` + "details ".repeat(850),
+).join("\n");
 const boundedSections = prepareDocumentSections(pathologicalPdfText);
 assert.ok(
-  boundedSections.length > 1,
-  "one-line PDF extraction must be split into bounded segments",
+  boundedSections.length === 27,
+  "Physics 1610 fixture must produce 27 bounded segments",
 );
 assert.ok(
   boundedSections.every(
     (section) => section.text.length <= MAX_DOCUMENT_SECTION_SIZE,
   ),
   "reanalysis segments must remain bounded",
+);
+assert.ok(
+  boundedSections.length < MAX_DOCUMENT_SECTIONS_SAFETY_FUSE,
+  "27 normal syllabus segments must remain below only the extreme safety fuse",
 );
 assert.throws(
   () => prepareDocumentSections(" \n\t "),
@@ -341,6 +378,13 @@ assert.equal(item("reference").normalizedType, "reference");
 assert.equal(item("material").normalizedType, "reference");
 assert.equal(analysis.structuredData.meetingTimes.length, 1);
 assert.equal(analysis.structuredData.officeHours[0].optional, true);
+if (providerFallback) {
+  assert.deepEqual(
+    [...new Set(traversedSlots)],
+    [0, 1, 2, 3, 4, 5, 6, 7],
+    "extraction-stage 503s must traverse every independent project slot",
+  );
+}
 const { refineSyllabusItem, groundedTermDate } = load(
   "src/lib/syllabusIntelligence.ts",
 );
