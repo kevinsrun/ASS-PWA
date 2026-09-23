@@ -41,7 +41,7 @@ import {
 
 export const GEMINI_ANALYSIS_TIMEOUT_MS = 90_000;
 export const MAX_DOCUMENT_SECTION_SIZE = 20_000;
-export const MAX_DOCUMENT_SECTIONS = 20;
+export const MAX_DOCUMENT_SECTIONS_SAFETY_FUSE = 256;
 
 export function prepareDocumentSections(text: string): DocumentSection[] {
   if (!text.trim())
@@ -74,9 +74,9 @@ export function prepareDocumentSections(text: string): DocumentSection[] {
         text: remainder,
       });
   }
-  if (sections.length > MAX_DOCUMENT_SECTIONS)
+  if (sections.length > MAX_DOCUMENT_SECTIONS_SAFETY_FUSE)
     throw new Error(
-      `Document produced ${sections.length} bounded segments, exceeding the ${MAX_DOCUMENT_SECTIONS}-segment limit; preserve the original source and import a smaller section.`,
+      `Document produced ${sections.length} bounded segments, exceeding the extreme ${MAX_DOCUMENT_SECTIONS_SAFETY_FUSE}-segment safety fuse; preserve the original source and import a smaller section.`,
     );
   return sections;
 }
@@ -567,11 +567,11 @@ async function analyzeFileUncached(
         );
   if (
     !sections.length ||
-    sections.length > MAX_DOCUMENT_SECTIONS ||
+    sections.length > MAX_DOCUMENT_SECTIONS_SAFETY_FUSE ||
     sections.some((section) => section.text.length > MAX_DOCUMENT_SECTION_SIZE)
   )
     throw new Error(
-      `Document segmentation produced ${sections.length} segments; source text is empty or exceeds the bounded ${MAX_DOCUMENT_SECTIONS}-segment limit.`,
+      `Document segmentation produced ${sections.length} segments; source text is empty or exceeds the bounded safety fuse of ${MAX_DOCUMENT_SECTIONS_SAFETY_FUSE} segments.`,
     );
   log("segmented", {
     extractionSize: text?.length ?? null,
