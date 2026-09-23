@@ -52,7 +52,9 @@ new Function(
 );
 assert.equal(
   (
-    await loaded.exports.getGeminiModel().generateContent("test")
+    await loaded.exports
+      .getGeminiModel(undefined, undefined, "high", { allowModelFallback: true })
+      .generateContent("test")
   ).response.text(),
   "OK",
 );
@@ -67,13 +69,39 @@ for (const status of [401, 403, 429, 500]) {
 failure = 404;
 calls.length = 0;
 const schema = { type: "object", properties: {} };
-await loaded.exports.getGeminiModel(undefined, schema).generateContent("test");
+await loaded.exports
+  .getGeminiModel(undefined, schema, "high", { allowModelFallback: true })
+  .generateContent("test");
 assert.deepEqual(calls[1].generationConfig.responseSchema, schema);
 failure = 503;
 failFallback = true;
 calls.length = 0;
 await assert.rejects(loaded.exports.getGeminiModel().generateContent("test"));
+assert.equal(calls.length, 1);
+calls.length = 0;
+await assert.rejects(
+  loaded.exports
+    .getGeminiModel(undefined, undefined, "high", { allowModelFallback: true })
+    .generateContent("test"),
+);
 assert.equal(calls.length, 2);
+assert.deepEqual(
+  loaded.exports.classifyGeminiFailure(
+    Object.assign(new Error("HTTP 503 Service Unavailable"), { status: 503 }),
+  ),
+  {
+    category: "TRANSIENT_MODEL_UNAVAILABLE",
+    status: 503,
+    retryable: true,
+    coolKey: false,
+  },
+);
+assert.equal(
+  loaded.exports.classifyGeminiFailure(
+    Object.assign(new Error("quota exceeded"), { status: 429 }),
+  ).coolKey,
+  true,
+);
 console.log(
   "Gemini availability fallback is bounded, preserves schemas, and never masks credentials, permission or quota failures.",
 );

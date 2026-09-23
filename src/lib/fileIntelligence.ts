@@ -7,7 +7,12 @@ import {
   markExtractionItemConverted,
 } from "@/lib/objectCreation";
 import { deriveAcademicSchedule } from "@/lib/academicSchedule";
-import { getGeminiModel, rotateGeminiKey } from "@/lib/gemini";
+import {
+  classifyGeminiFailure,
+  getGeminiKeySlot,
+  getGeminiModel,
+  rotateGeminiKey,
+} from "@/lib/gemini";
 import { GEMINI_MODELS } from "@/lib/geminiModels";
 import {cachedAIResult} from "@/lib/ai/cache";
 import { extractDocumentText } from "@/lib/documentText";
@@ -305,39 +310,68 @@ async function modelJson(
   thinkingLevel: "low" | "high" = "high",
   stage = "analysis",
 ) {
-  let response;
-  const model =
+  const primaryModel =
     thinkingLevel === "low" ? GEMINI_MODELS.fast : GEMINI_MODELS.reasoning;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      response = await getGeminiModel(model, schema, thinkingLevel).generateContent(
-        parts,
-        { timeout: 45_000 },
-      );
-      break;
-    } catch (error) {
-      const message = String(error);
-      const status = Number((error as { status?: number })?.status);
-      const transient = status === 429 || status === 503 || /\b(?:429|503)\b/.test(message);
-      if (!transient || attempt === 2) throw error;
-      rotateGeminiKey();
-      console.warn(
-        JSON.stringify({
-          service: "file-intelligence",
-          stage: "model-retry",
+  const models = [...new Set([primaryModel, GEMINI_MODELS.fallback])];
+  let lastError: unknown;
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+    const model = models[modelIndex];
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const response = await getGeminiModel(
           model,
-          attempt,
-          status: status || null,
-          reason: status === 503 ? "provider_unavailable" : "rate_limited",
-        }),
-      );
+          schema,
+          thinkingLevel,
+          { allowModelFallback: false },
+        ).generateContent(parts, { timeout: 45_000 });
+        const parsed: unknown = parseModelJson(
+          response.response.text(),
+          stage,
+        );
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+          throw new Error("Gemini returned an invalid analysis object");
+        return parsed as Record<string, unknown>;
+      } catch (error) {
+        lastError = error;
+        const failure = classifyGeminiFailure(error);
+        console.warn(
+          JSON.stringify({
+            service: "file-intelligence",
+            stage: "model-attempt",
+            analysisStage: stage,
+            provider: "gemini",
+            model,
+            keySlot: getGeminiKeySlot(),
+            retry: attempt - 1,
+            status: failure.status,
+            category: failure.category,
+            keyCooled: failure.coolKey,
+            modelFallback: modelIndex > 0,
+          }),
+        );
+        if (!failure.retryable) throw error;
+        if (failure.coolKey) rotateGeminiKey();
+        if (attempt < 3) {
+          const delay = Math.min(2_000, 200 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 200);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else if (modelIndex + 1 < models.length) {
+          console.warn(
+            JSON.stringify({
+              service: "file-intelligence",
+              stage: "model-fallback",
+              provider: "gemini",
+              from: model,
+              to: models[modelIndex + 1],
+              category: failure.category,
+            }),
+          );
+        }
+      }
     }
   }
-  if (!response) throw new Error(`Gemini returned no response (${stage})`);
-  const parsed: unknown = parseModelJson(response.response.text(), stage);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error("Gemini returned an invalid analysis object");
-  return parsed as Record<string, unknown>;
+  throw new Error(
+    `Gemini analysis exhausted fallback models (${stage}): ${lastError instanceof Error ? lastError.message : "unknown provider error"}`,
+  );
 }
 
 export async function analyzeFile(
