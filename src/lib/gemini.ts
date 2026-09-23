@@ -1,11 +1,32 @@
 import { GoogleGenerativeAI, type Schema } from "@google/generative-ai";
+import { createHash } from "crypto";
 import { GEMINI_MODELS } from "@/lib/geminiModels";
 import {trackAIUsage} from "@/lib/ai/cache";
 
-const keys =
-  process.env.GEMINI_API_KEYS?.split(",")
-    .map((k) => k.trim())
-    .filter(Boolean) ?? [];
+const configuredKeyValues = [
+  process.env.GEMINI_API_KEYS ?? "",
+  ...Array.from({ length: 8 }, (_, index) =>
+    process.env[`GEMINI_API_KEY_${index + 1}`] ?? "",
+  ),
+];
+const discoveredKeys = configuredKeyValues
+  .flatMap((value) => value.split(","))
+  .map((key) => key.trim())
+  .filter(Boolean);
+const keys = discoveredKeys.filter(
+  (key, index) =>
+    discoveredKeys.findIndex((candidate) => candidate === key) === index,
+);
+const duplicateKeyFingerprints = discoveredKeys
+  .filter((key, index) => discoveredKeys.indexOf(key) !== index)
+  .map((key) => createHash("sha256").update(key).digest("hex").slice(0, 8));
+const keyFingerprints = keys.map((key) =>
+  createHash("sha256").update(key).digest("hex").slice(0, 8),
+);
+const projectIds = (process.env.GEMINI_PROJECT_IDS ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 let currentKeyIndex = 0;
 
@@ -62,6 +83,31 @@ export function getGeminiKeySlot() {
   return currentKeyIndex;
 }
 
+export function getGeminiKeyPoolDiagnostics() {
+  const configured = discoveredKeys.length;
+  return {
+    environment: process.env.VERCEL_ENV ?? "development",
+    configuredKeySlots: configured,
+    usableKeySlots: keys.length,
+    missingSlots: Array.from({ length: Math.max(0, 8 - configured) }, (_, index) =>
+      configured + index,
+    ),
+    duplicateKeyFingerprints: [...new Set(duplicateKeyFingerprints)],
+    keyFingerprints,
+    projectSlots: keys.map((_, index) => projectIds[index] ?? null),
+  };
+}
+
+export function getGeminiKeyPoolSize() {
+  return keys.length;
+}
+
+export function selectGeminiKeySlot(slot: number) {
+  if (!Number.isInteger(slot) || slot < 0 || slot >= keys.length)
+    throw new Error(`Gemini key slot ${slot} is unavailable`);
+  currentKeyIndex = slot;
+}
+
 export function getGeminiModel(
   model = GEMINI_MODELS.reasoning,
   responseSchema?: Schema,
@@ -99,7 +145,9 @@ export function getGeminiModel(
           service: "gemini",
           stage: "generation-completed",
           model,
-          thinkingLevel,
+        keySlot: currentKeyIndex,
+        projectId: projectIds[currentKeyIndex] ?? null,
+        thinkingLevel,
         }),
       );
       return result;
@@ -163,5 +211,12 @@ export function getGeminiModel(
 export function rotateGeminiKey() {
   currentKeyIndex = (currentKeyIndex + 1) % keys.length;
 
-  console.log("Rotated Gemini key:", currentKeyIndex);
+  console.log(
+    JSON.stringify({
+      service: "gemini",
+      stage: "key-rotated",
+      keySlot: currentKeyIndex,
+      projectId: projectIds[currentKeyIndex] ?? null,
+    }),
+  );
 }

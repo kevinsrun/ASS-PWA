@@ -10,8 +10,10 @@ import { deriveAcademicSchedule } from "@/lib/academicSchedule";
 import {
   classifyGeminiFailure,
   getGeminiKeySlot,
+  getGeminiKeyPoolDiagnostics,
+  getGeminiKeyPoolSize,
   getGeminiModel,
-  rotateGeminiKey,
+  selectGeminiKeySlot,
 } from "@/lib/gemini";
 import { GEMINI_MODELS } from "@/lib/geminiModels";
 import {cachedAIResult} from "@/lib/ai/cache";
@@ -368,34 +370,45 @@ async function modelJson(
     thinkingLevel === "low" ? GEMINI_MODELS.fast : GEMINI_MODELS.reasoning;
   const models = [...new Set([primaryModel, GEMINI_MODELS.fallback])];
   let lastError: unknown;
+  const keySlots = Array.from({ length: getGeminiKeyPoolSize() }, (_, index) => index);
+  console.info(
+    JSON.stringify({
+      service: "file-intelligence",
+      stage: "gemini-pool",
+      analysisStage: stage,
+      ...getGeminiKeyPoolDiagnostics(),
+    }),
+  );
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
     const model = models[modelIndex];
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const requestStartedAt = Date.now();
-      try {
-        const response = await getGeminiModel(
-          model,
-          schema,
-          thinkingLevel,
-          { allowModelFallback: false },
-        ).generateContent(parts, { timeout: GEMINI_ANALYSIS_TIMEOUT_MS });
-        const parsed: unknown = parseModelJson(
-          response.response.text(),
-          stage,
-        );
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-          throw new Error("Gemini returned an invalid analysis object");
-        return parsed as Record<string, unknown>;
-      } catch (error) {
-        lastError = error;
-        const failure = classifyAnalysisAbort(
-          error,
-          Date.now() - requestStartedAt,
-          GEMINI_ANALYSIS_TIMEOUT_MS,
-        );
-        const elapsedMs = Date.now() - requestStartedAt;
-        console.warn(
-          JSON.stringify({
+    for (const slot of keySlots) {
+      selectGeminiKeySlot(slot);
+      let quotaExhausted = false;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const requestStartedAt = Date.now();
+        try {
+          const response = await getGeminiModel(
+            model,
+            schema,
+            thinkingLevel,
+            { allowModelFallback: false },
+          ).generateContent(parts, { timeout: GEMINI_ANALYSIS_TIMEOUT_MS });
+          const parsed: unknown = parseModelJson(
+            response.response.text(),
+            stage,
+          );
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            throw new Error("Gemini returned an invalid analysis object");
+          return parsed as Record<string, unknown>;
+        } catch (error) {
+          lastError = error;
+          const elapsedMs = Date.now() - requestStartedAt;
+          const failure = classifyAnalysisAbort(
+            error,
+            elapsedMs,
+            GEMINI_ANALYSIS_TIMEOUT_MS,
+          );
+          console.warn(JSON.stringify({
             service: "file-intelligence",
             stage: "model-attempt",
             analysisStage: stage,
@@ -412,32 +425,33 @@ async function modelJson(
             modelFallback: modelIndex > 0,
             elapsedMs,
             timeoutMs: GEMINI_ANALYSIS_TIMEOUT_MS,
-            abortSource:
-              failure.category === "PROVIDER_TIMEOUT"
-                ? elapsedMs >= GEMINI_ANALYSIS_TIMEOUT_MS
-                  ? "model-call-timeout"
-                  : "provider-or-network"
-                : null,
-          }),
-        );
-        if (!failure.retryable) throw error;
-        if (failure.coolKey) rotateGeminiKey();
-        if (attempt < 3) {
-          const delay = Math.min(2_000, 200 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 200);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        } else if (modelIndex + 1 < models.length) {
-          console.warn(
-            JSON.stringify({
-              service: "file-intelligence",
-              stage: "model-fallback",
-              provider: "gemini",
-              from: model,
-              to: models[modelIndex + 1],
-              category: failure.category,
-            }),
-          );
+            nextKeySlot: failure.category === "QUOTA_RATE_LIMIT"
+              ? keySlots[keySlots.indexOf(slot) + 1] ?? null
+              : null,
+          }));
+          if (!failure.retryable) throw error;
+          if (failure.category === "QUOTA_RATE_LIMIT") {
+            quotaExhausted = true;
+            break;
+          }
+          if (attempt < 3) {
+            const delay = Math.min(2_000, 200 * 2 ** (attempt - 1)) +
+              Math.floor(Math.random() * 200);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
         }
       }
+      if (quotaExhausted) continue;
+    }
+    if (modelIndex + 1 < models.length) {
+      console.warn(JSON.stringify({
+        service: "file-intelligence",
+        stage: "model-fallback",
+        provider: "gemini",
+        from: model,
+        to: models[modelIndex + 1],
+        category: classifyGeminiFailure(lastError).category,
+      }));
     }
   }
   throw new Error(

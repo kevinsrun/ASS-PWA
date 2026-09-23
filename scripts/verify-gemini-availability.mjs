@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import ts from "typescript";
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 const calls = [];
 let failure = 503,
   failFallback = false;
@@ -46,7 +48,7 @@ new Function(
   }).outputText,
 )(
   (name) =>
-    name === "@/lib/geminiModels" ? configured.exports : name === "@/lib/ai/cache" ? {trackAIUsage:()=>{}} : { GoogleGenerativeAI },
+    name === "@/lib/geminiModels" ? configured.exports : name === "@/lib/ai/cache" ? {trackAIUsage:()=>{}} : name === "crypto" ? require("node:crypto") : { GoogleGenerativeAI },
   loaded,
   loaded.exports,
 );

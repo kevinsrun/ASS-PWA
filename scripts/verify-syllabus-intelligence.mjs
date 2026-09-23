@@ -208,7 +208,22 @@ function load(file) {
     if (name === "@/lib/gemini")
       return process.argv.includes("--live")
         ? load("src/lib/gemini.ts")
-        : { getGeminiModel: () => model, rotateGeminiKey: () => {} };
+        : {
+            getGeminiModel: () => model,
+            getGeminiKeyPoolDiagnostics: () => ({
+              environment: "test",
+              configuredKeySlots: 1,
+              usableKeySlots: 1,
+              missingSlots: [],
+              duplicateKeyFingerprints: [],
+              keyFingerprints: ["fixture"],
+              projectSlots: [null],
+            }),
+            getGeminiKeyPoolSize: () => 1,
+            getGeminiKeySlot: () => 0,
+            selectGeminiKeySlot: () => {},
+            rotateGeminiKey: () => {},
+          };
     if (name === "@/lib/supabaseServer")
       return { getServiceSupabaseClient: () => (dbEnabled ? db : null) };
     if (name === "@/lib/documentText")
