@@ -422,11 +422,17 @@ async function modelJson(
             status: failure.status,
             category: failure.category,
             keyCooled: failure.coolKey,
+            quotaId: failure.category === "QUOTA_RATE_LIMIT"
+              ? String(error).match(/GenerateRequestsPerDayPerProjectPerModel-[A-Za-z0-9-]+/)?.[0] ?? null
+              : null,
             modelFallback: modelIndex > 0,
             elapsedMs,
             timeoutMs: GEMINI_ANALYSIS_TIMEOUT_MS,
             nextKeySlot: failure.category === "QUOTA_RATE_LIMIT"
               ? keySlots[keySlots.indexOf(slot) + 1] ?? null
+              : null,
+            skipReason: failure.category === "QUOTA_RATE_LIMIT"
+              ? "project_model_quota_exhausted"
               : null,
           }));
           if (!failure.retryable) throw error;
