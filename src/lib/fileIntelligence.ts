@@ -10,8 +10,10 @@ import { deriveAcademicSchedule } from "@/lib/academicSchedule";
 import {
   classifyGeminiFailure,
   getGeminiKeySlot,
+  getGeminiKeyPoolDiagnostics,
+  getGeminiKeyPoolSize,
   getGeminiModel,
-  rotateGeminiKey,
+  selectGeminiKeySlot,
 } from "@/lib/gemini";
 import { GEMINI_MODELS } from "@/lib/geminiModels";
 import {cachedAIResult} from "@/lib/ai/cache";
@@ -36,6 +38,59 @@ import {
   refineSyllabusItem,
   structuredSyllabus,
 } from "@/lib/syllabusIntelligence";
+
+export const GEMINI_ANALYSIS_TIMEOUT_MS = 90_000;
+export const MAX_DOCUMENT_SECTION_SIZE = 20_000;
+export const MAX_DOCUMENT_SECTIONS = 20;
+
+export function prepareDocumentSections(text: string): DocumentSection[] {
+  if (!text.trim())
+    throw new Error(
+      "Original syllabus source text is empty; re-analysis cannot proceed without the stored source.",
+    );
+  const initial = segmentDocument(text);
+  if (!initial.length)
+    throw new Error(
+      "Original syllabus source produced zero document segments; the stored source is unusable.",
+    );
+  const sections: DocumentSection[] = [];
+  for (const section of initial) {
+    let remainder = section.text;
+    while (remainder.length > MAX_DOCUMENT_SECTION_SIZE) {
+      let splitAt = remainder.lastIndexOf("\n", MAX_DOCUMENT_SECTION_SIZE);
+      if (splitAt < MAX_DOCUMENT_SECTION_SIZE * 0.5) splitAt = MAX_DOCUMENT_SECTION_SIZE;
+      sections.push({
+        ...section,
+        id: `section-${sections.length + 1}`,
+        text: remainder.slice(0, splitAt).trim(),
+        location: `${section.location} (part ${sections.length + 1})`,
+      });
+      remainder = remainder.slice(splitAt).trim();
+    }
+    if (remainder)
+      sections.push({
+        ...section,
+        id: `section-${sections.length + 1}`,
+        text: remainder,
+      });
+  }
+  if (sections.length > MAX_DOCUMENT_SECTIONS)
+    throw new Error(
+      `Document produced ${sections.length} bounded segments, exceeding the ${MAX_DOCUMENT_SECTIONS}-segment limit; preserve the original source and import a smaller section.`,
+    );
+  return sections;
+}
+
+export function classifyAnalysisAbort(
+  error: unknown,
+  elapsedMs: number,
+  timeoutMs: number,
+) {
+  return classifyGeminiFailure(error, {
+    elapsedMs,
+    timeoutMs,
+  });
+}
 
 export const fileClassifications = [
   "syllabus",
@@ -309,36 +364,57 @@ async function modelJson(
   schema: Schema,
   thinkingLevel: "low" | "high" = "high",
   stage = "analysis",
+  diagnostics: { attemptId?: string; batch?: number; courseId?: string } = {},
 ) {
   const primaryModel =
     thinkingLevel === "low" ? GEMINI_MODELS.fast : GEMINI_MODELS.reasoning;
   const models = [...new Set([primaryModel, GEMINI_MODELS.fallback])];
   let lastError: unknown;
+  const keySlots = Array.from({ length: getGeminiKeyPoolSize() }, (_, index) => index);
+  console.info(
+    JSON.stringify({
+      service: "file-intelligence",
+      stage: "gemini-pool",
+      analysisStage: stage,
+      ...getGeminiKeyPoolDiagnostics(),
+    }),
+  );
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
     const model = models[modelIndex];
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        const response = await getGeminiModel(
-          model,
-          schema,
-          thinkingLevel,
-          { allowModelFallback: false },
-        ).generateContent(parts, { timeout: 45_000 });
-        const parsed: unknown = parseModelJson(
-          response.response.text(),
-          stage,
-        );
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-          throw new Error("Gemini returned an invalid analysis object");
-        return parsed as Record<string, unknown>;
-      } catch (error) {
-        lastError = error;
-        const failure = classifyGeminiFailure(error);
-        console.warn(
-          JSON.stringify({
+    for (const slot of keySlots) {
+      selectGeminiKeySlot(slot);
+      let quotaExhausted = false;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const requestStartedAt = Date.now();
+        try {
+          const response = await getGeminiModel(
+            model,
+            schema,
+            thinkingLevel,
+            { allowModelFallback: false },
+          ).generateContent(parts, { timeout: GEMINI_ANALYSIS_TIMEOUT_MS });
+          const parsed: unknown = parseModelJson(
+            response.response.text(),
+            stage,
+          );
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            throw new Error("Gemini returned an invalid analysis object");
+          return parsed as Record<string, unknown>;
+        } catch (error) {
+          lastError = error;
+          const elapsedMs = Date.now() - requestStartedAt;
+          const failure = classifyAnalysisAbort(
+            error,
+            elapsedMs,
+            GEMINI_ANALYSIS_TIMEOUT_MS,
+          );
+          console.warn(JSON.stringify({
             service: "file-intelligence",
             stage: "model-attempt",
             analysisStage: stage,
+            analysisAttemptId: diagnostics.attemptId ?? null,
+            batch: diagnostics.batch ?? null,
+            courseId: diagnostics.courseId ?? null,
             provider: "gemini",
             model,
             keySlot: getGeminiKeySlot(),
@@ -347,26 +423,35 @@ async function modelJson(
             category: failure.category,
             keyCooled: failure.coolKey,
             modelFallback: modelIndex > 0,
-          }),
-        );
-        if (!failure.retryable) throw error;
-        if (failure.coolKey) rotateGeminiKey();
-        if (attempt < 3) {
-          const delay = Math.min(2_000, 200 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 200);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        } else if (modelIndex + 1 < models.length) {
-          console.warn(
-            JSON.stringify({
-              service: "file-intelligence",
-              stage: "model-fallback",
-              provider: "gemini",
-              from: model,
-              to: models[modelIndex + 1],
-              category: failure.category,
-            }),
-          );
+            elapsedMs,
+            timeoutMs: GEMINI_ANALYSIS_TIMEOUT_MS,
+            nextKeySlot: failure.category === "QUOTA_RATE_LIMIT"
+              ? keySlots[keySlots.indexOf(slot) + 1] ?? null
+              : null,
+          }));
+          if (!failure.retryable) throw error;
+          if (failure.category === "QUOTA_RATE_LIMIT") {
+            quotaExhausted = true;
+            break;
+          }
+          if (attempt < 3) {
+            const delay = Math.min(2_000, 200 * 2 ** (attempt - 1)) +
+              Math.floor(Math.random() * 200);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
         }
       }
+      if (quotaExhausted) continue;
+    }
+    if (modelIndex + 1 < models.length) {
+      console.warn(JSON.stringify({
+        service: "file-intelligence",
+        stage: "model-fallback",
+        provider: "gemini",
+        from: model,
+        to: models[modelIndex + 1],
+        category: classifyGeminiFailure(lastError).category,
+      }));
     }
   }
   throw new Error(
@@ -431,7 +516,13 @@ async function analyzeFileUncached(
         data: file.buffer.toString("base64"),
       },
     });
-  const document = await modelJson(parts, segmentationSchema, "low", "classification");
+  const document = await modelJson(
+    parts,
+    segmentationSchema,
+    "low",
+    "classification",
+    { attemptId },
+  );
   log("classified", { classification: document.classification });
   if (
     !fileClassifications.includes(document.classification as FileClassification)
@@ -440,7 +531,7 @@ async function analyzeFileUncached(
   const classification = document.classification as FileClassification;
   const sections: DocumentSection[] =
     text !== null
-      ? segmentDocument(text)
+      ? prepareDocumentSections(text)
       : (Array.isArray(document.sections) ? document.sections : []).map(
           (value, index) => {
             if (!value || typeof value !== "object")
@@ -470,12 +561,17 @@ async function analyzeFileUncached(
         );
   if (
     !sections.length ||
-    sections.length > 20 ||
-    sections.some((section) => section.text.length > 20_000)
+    sections.length > MAX_DOCUMENT_SECTIONS ||
+    sections.some((section) => section.text.length > MAX_DOCUMENT_SECTION_SIZE)
   )
     throw new Error(
-      "Document segmentation is empty or too large. Import a smaller section for reliable analysis.",
+      `Document segmentation produced ${sections.length} segments; source text is empty or exceeds the bounded ${MAX_DOCUMENT_SECTIONS}-segment limit.`,
     );
+  log("segmented", {
+    extractionSize: text?.length ?? null,
+    segmentCount: sections.length,
+    largestSegmentSize: Math.max(...sections.map((section) => section.text.length)),
+  });
   const sourceText =
     text ?? sections.map((section) => section.text).join("\n\n");
   const structured: Record<string, unknown> = {
@@ -552,6 +648,7 @@ async function analyzeFileUncached(
       schema,
       "high",
       "extraction",
+      { attemptId, batch: index / 4 + 1 },
     );
     log("items-parsed", {
       batch: index / 4 + 1,
@@ -572,6 +669,7 @@ async function analyzeFileUncached(
         schema,
         "high",
         "review",
+        { attemptId, batch: index / 4 + 1 },
       );
     }
     if (!Array.isArray(result.items) || result.items.length > 80)
