@@ -14,6 +14,7 @@
     "verify:persistence": "node scripts/verify-journal-habit-persistence.mjs",
     "verify:finance": "node scripts/verify-finance-calculations.mjs",
     "verify:gmail-push": "node scripts/verify-gmail-push.mjs",
+    "verify:gmail-adversarial": "node scripts/verify-gmail-adversarial.mjs",
     "verify:gmail-incremental": "node scripts/verify-gmail-incremental.mjs",
     "verify:chat-actions": "node scripts/verify-chat-actions.mjs",
     "verify:personalization": "node scripts/verify-personalization.mjs",
