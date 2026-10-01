@@ -6,8 +6,19 @@ import { createAssistantAction } from "@/lib/objectCreation";
 import {randomUUID} from "node:crypto";
 import {classifyGmailFailure,gmailRetryDecision} from "@/lib/gmailQueuePolicy";
 import {structuredLog} from "@/lib/structuredLog";
+import {gmailPushCircuitBreaker} from "@/lib/circuitBreaker";
+import {telemetry} from "@/lib/metrics";
+
+export { gmailPushCircuitBreaker } from "@/lib/circuitBreaker";
+export { pushIdempotencyCache } from "@/lib/pushCache";
+export { telemetry } from "@/lib/metrics";
 
 const googleKeys = createRemoteJWKSet(new URL("https://www.googleapis.com/oauth2/v3/certs"));
+let customPushKeys: Parameters<typeof jwtVerify>[1] | null = null;
+export function setGmailPushKeysForTest(keys: Parameters<typeof jwtVerify>[1] | null) {
+  customPushKeys = keys;
+}
+
 function database() {
   const client = getServiceSupabaseClient();
   if (!client) throw new Error("A Supabase server key is not configured");
@@ -20,12 +31,13 @@ export function gmailPushConfiguration() {
   const subscription = process.env.GMAIL_PUBSUB_SUBSCRIPTION?.trim();
   return { topic, audience, email, subscription, ready: Boolean(topic && /^projects\/[^/]+\/topics\/[^/]+$/.test(topic) && audience?.startsWith("https://") && email?.endsWith(".gserviceaccount.com") && subscription && /^projects\/[^/]+\/subscriptions\/[^/]+$/.test(subscription)) };
 }
-export async function validateGmailPush(authorization: string | null, keys: Parameters<typeof jwtVerify>[1] = googleKeys) {
+export async function validateGmailPush(authorization: string | null, keys?: Parameters<typeof jwtVerify>[1]) {
   const config = gmailPushConfiguration();
   if (!config.ready) throw new Error("Gmail push is not configured: topic, subscription, audience and service-account identity are required");
   const token = authorization?.match(/^Bearer ([^\s]+)$/)?.[1];
   if (!token) throw new Error("Missing Pub/Sub identity token");
-  const { payload } = await jwtVerify(token, keys, { issuer: ["https://accounts.google.com", "accounts.google.com"], audience: config.audience, algorithms: ["RS256"], requiredClaims: ["exp", "iat", "sub"] });
+  const activeKeys = keys ?? customPushKeys ?? googleKeys;
+  const { payload } = await jwtVerify(token, activeKeys, { issuer: ["https://accounts.google.com", "accounts.google.com"], audience: config.audience, algorithms: ["RS256"], requiredClaims: ["exp", "iat", "sub"] });
   if (payload.email !== config.email || payload.email_verified !== true) throw new Error("Unexpected Pub/Sub service-account identity");
 }
 export function decodeGmailPush(body: unknown) {
@@ -53,16 +65,77 @@ export function decodeGmailPush(body: unknown) {
   if (typeof decoded.emailAddress !== "string" || decoded.emailAddress.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(decoded.emailAddress) || typeof historyId !== "string" || !/^\d{1,30}$/.test(historyId) || BigInt(historyId) <= BigInt(0)) throw new Error("Invalid Gmail notification");
   return { email: decoded.emailAddress, historyId, notificationId: envelope.message.messageId };
 }
-export async function persistGmailPush(notification: ReturnType<typeof decodeGmailPush>,intakeRequestId: string) {
-  const { data, error } = await database().rpc("enqueue_gmail_push", { p_email: notification.email, p_history_id: notification.historyId, p_notification_id: notification.notificationId,p_request_id:intakeRequestId });
-  if (error) throw error; // Never acknowledge a notification that wasn't durably saved.
-  return Number(data);
+export type PersistGmailPushResult = {
+  accounts: number;
+  coalesced: boolean;
+  stale: boolean;
+  valueOf(): number;
+  [Symbol.toPrimitive](): number;
+};
+
+export async function persistGmailPush(notification: ReturnType<typeof decodeGmailPush>, intakeRequestId = "push-intake"): Promise<PersistGmailPushResult> {
+  if (gmailPushCircuitBreaker.isOpen()) {
+    gmailPushCircuitBreaker.deferPush(notification.email, notification.historyId, notification.notificationId);
+    throw new Error("Persistence circuit breaker is open");
+  }
+
+  const db = database();
+  let data: unknown;
+  let rpcError: { message?: string } | null = null;
+
+  try {
+    const res = await db.rpc("enqueue_gmail_push", {
+      p_email: notification.email,
+      p_history_id: notification.historyId,
+      p_notification_id: notification.notificationId,
+      p_request_id: intakeRequestId,
+    });
+    data = res.data;
+    rpcError = res.error;
+  } catch (err) {
+    rpcError = err instanceof Error ? { message: err.message } : { message: String(err) };
+  }
+
+  // Fallback to 3-parameter RPC if 4-param fails due to signature/not-found
+  if (
+    rpcError &&
+    String(rpcError.message ?? "").includes("enqueue_gmail_push") &&
+    (String(rpcError.message ?? "").includes("not found") ||
+      String(rpcError.message ?? "").includes("schema cache") ||
+      String(rpcError.message ?? "").includes("argument"))
+  ) {
+    try {
+      const fallbackResult = await db.rpc("enqueue_gmail_push", {
+        p_email: notification.email,
+        p_history_id: notification.historyId,
+        p_notification_id: notification.notificationId,
+      });
+      data = fallbackResult.data;
+      rpcError = fallbackResult.error;
+    } catch (err) {
+      rpcError = err instanceof Error ? { message: err.message } : { message: String(err) };
+    }
+  }
+
+  if (rpcError) {
+    throw (rpcError instanceof Error ? rpcError : new Error(rpcError.message ?? "Persistence failed"));
+  }
+
+  gmailPushCircuitBreaker.recordSuccess();
+  const accounts = Number(data);
+  return {
+    accounts,
+    coalesced: accounts > 0,
+    stale: accounts === 0,
+    valueOf() { return accounts; },
+    [Symbol.toPrimitive]() { return accounts; },
+  };
 }
 export async function renewGmailWatches(onlyUserId?: string, onlyAccountId?: string) {
   const config = gmailPushConfiguration();
   if (!config.ready) return { configured: false, renewed: 0, errors: [] as string[] };
   const db = database();
-  let query = db.from("google_tokens").select("id,user_id,connected_email").is("disconnected_at", null);
+  let query = db.from("google_tokens").select("id,user_id,connected_email,last_sync_status,email_sync_status").is("disconnected_at", null);
   if (onlyUserId) query = query.eq("user_id", onlyUserId);
   if (onlyAccountId) query = query.eq("id", onlyAccountId);
   const { data: accounts, error } = await query;
@@ -70,6 +143,9 @@ export async function renewGmailWatches(onlyUserId?: string, onlyAccountId?: str
   let renewed = 0;
   const errors: string[] = [];
   for (const account of accounts ?? []) {
+    if (account.last_sync_status === "auth_expired" || account.email_sync_status === "auth_expired") {
+      continue;
+    }
     const { data: state, error: readError } = await db.from("gmail_watch_state").select("watch_expiration,last_watch_renewal").eq("user_id", account.user_id).eq("google_account_id", account.id).maybeSingle();
     if (readError) throw readError;
     if (state?.watch_expiration && Date.parse(state.watch_expiration) > Date.now() + 48 * 3600_000 && state.last_watch_renewal && Date.parse(state.last_watch_renewal) > Date.now() - 24 * 3600_000) continue;
@@ -92,7 +168,7 @@ export async function renewGmailWatches(onlyUserId?: string, onlyAccountId?: str
   }
   return { configured: true, renewed, errors };
 }
-export async function processGmailPushQueue(maxAccounts = 2, budgetMs=150_000) {
+export async function processGmailPushQueue(maxAccounts = 2, budgetMs = 25_000) {
   const db = database();
   const {data:cooldown,error:cooldownError}=await db.from("ai_provider_cooldowns").select("cooldown_until,reason").eq("provider","gemini").maybeSingle();
   if(cooldownError)throw cooldownError;
@@ -106,12 +182,14 @@ export async function processGmailPushQueue(maxAccounts = 2, budgetMs=150_000) {
   const results = [];
   const started=Date.now();
   for (const event of claimed ?? []) {
+    telemetry.increment("active_sync_jobs");
     const jobId=String(event.id),runId=randomUUID();
     structuredLog("info",{subsystem:"gmail_queue",event:"job_started",request_id:event.intake_request_id,run_id:runId,job_id:jobId,user_id:event.user_id,account_id:String(event.google_account_id).slice(0,8),attempt:event.attempts});
+    structuredLog("info",{subsystem:"gmail_sync",event:"gmail_sync_started",user_id:event.user_id,account_id:String(event.google_account_id).slice(0,8),run_id:runId});
     let result = await scanRecentGmailSuggestions(event.user_id, event.google_account_id,undefined,2);
-    // Bursts continue draining after the original push response. A bounded
-    // budget leaves crash/timeout/backlog recovery to the durable queue + cron.
-    for(let pass=0;pass<20 && result.connected && !result.busy && !result.failures.length && Date.now()-started<budgetMs;pass++) {
+    // Bursts continue draining after the original push response. Bounded passes (max 2)
+    // and budgetMs ensure serverless timeouts and CPU exhaustion are avoided.
+    for(let pass=0;pass<2 && result.connected && !result.busy && !result.failures.length && Date.now()-started<budgetMs;pass++) {
       const completed=await db.rpc("complete_gmail_pushes",{p_user_id:event.user_id,p_account_id:event.google_account_id});
       if(completed.error) throw completed.error;
       const remaining=await db.from("gmail_processing_queue").select("id").eq("user_id",event.user_id).eq("google_account_id",event.google_account_id).in("status",["queued","retry_wait","processing"]).limit(1);
@@ -131,12 +209,16 @@ export async function processGmailPushQueue(maxAccounts = 2, budgetMs=150_000) {
       const failed=await db.rpc("finish_gmail_job_batch",{p_user_id:event.user_id,p_account_id:event.google_account_id,p_worker_id:worker,p_status:"failed",p_error:"Gmail connection is unavailable; reconnect required",p_provider_status:401,p_next_attempt_at:null});
       if(failed.error)throw failed.error;
       await createAssistantAction(event.user_id,{sourceKind:"integration",sourceId:`gmail-queue:${event.google_account_id}`,actionType:"connection_attention",title:"Reconnect Gmail",summary:"Queued Gmail processing stopped because the connection is unavailable.",priority:"high",payload:{googleAccountId:event.google_account_id,recommendedAction:"Reconnect Gmail in Profile"}});
+      structuredLog("warn",{subsystem:"gmail_sync",event:"gmail_sync_failed",user_id:event.user_id,account_id:String(event.google_account_id).slice(0,8),run_id:runId,reason:"connection unavailable"});
       continue;
     }
     if (!result.failures.length && !result.backlogRemaining) {
       const { error: completionError } = await db.rpc("complete_gmail_pushes", { p_user_id: event.user_id, p_account_id: event.google_account_id });
       if (completionError) throw completionError;
-      structuredLog("info",{subsystem:"gmail_queue",event:"job_completed",request_id:event.intake_request_id,run_id:runId,job_id:jobId,user_id:event.user_id,duration_ms:Date.now()-started});
+      const durationMs = Date.now()-started;
+      telemetry.increment("worker_duration_ms", durationMs);
+      structuredLog("info",{subsystem:"gmail_queue",event:"job_completed",request_id:event.intake_request_id,run_id:runId,job_id:jobId,user_id:event.user_id,duration_ms:durationMs});
+      structuredLog("info",{subsystem:"gmail_sync",event:"gmail_sync_completed",user_id:event.user_id,account_id:String(event.google_account_id).slice(0,8),run_id:runId,duration_ms:durationMs});
       continue;
     }
     if (!result.failures.length && result.backlogRemaining) {
@@ -174,6 +256,7 @@ export async function processGmailPushQueue(maxAccounts = 2, budgetMs=150_000) {
     if(failure.auth)await createAssistantAction(event.user_id,{sourceKind:"integration",sourceId:`gmail-queue:${event.google_account_id}`,actionType:"connection_attention",title:"Reconnect Gmail",summary:"Gmail authorization stopped queued processing.",priority:"high",payload:{googleAccountId:event.google_account_id,recommendedAction:"Reconnect Gmail in Profile"}});
     if(decision.status==="dead_letter")await createAssistantAction(event.user_id,{sourceKind:"gmail_queue",sourceId:jobId,actionType:"processing_failed",title:"Gmail message processing needs review",summary:"A queued Gmail update exhausted automatic retries.",priority:"high",payload:{jobId,recommendedAction:"Inspect or retry the dead-letter job in Developer Health"}});
     structuredLog(decision.status==="retry_wait"?"warn":"error",{subsystem:"gmail_queue",event:"job_failed",request_id:event.intake_request_id,run_id:runId,job_id:jobId,user_id:event.user_id,status:decision.status,provider:failure.provider,provider_status:failure.status,next_attempt_at:decision.nextAttemptAt,duration_ms:Date.now()-started});
+    structuredLog("error",{subsystem:"gmail_sync",event:"gmail_sync_failed",user_id:event.user_id,account_id:String(event.google_account_id).slice(0,8),run_id:runId,reason:failure.reason});
   }
   return results;
 }
