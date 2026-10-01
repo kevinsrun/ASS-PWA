@@ -17,6 +17,7 @@ import { emailDisposition } from "@/lib/emailDisposition";
 import { getAutomationSettings } from "@/lib/automationSettings";
 import { flushProcessedGmailLabels } from "@/lib/gmailLabelAutomation";
 import { unsubscribeObviousJunk } from "@/lib/emailUnsubscribe";
+import { telemetry } from "@/lib/metrics";
 
 type GmailMessageList = { messages?: Array<{ id: string; threadId?: string }> };
 type GmailPart = { mimeType?: string; body?: { data?: string }; parts?: GmailPart[]; headers?: Array<{name:string;value:string}> };
@@ -141,6 +142,7 @@ export async function readGmailThread(userId:string,accountId:string,threadId:st
 }
 
 async function gmailFetch<T>(url: string, accessToken: string, attempt = 0): Promise<T> {
+  telemetry.increment("gmail_api_requests");
   const response = await fetch(url, {
     signal: AbortSignal.timeout(20_000),
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -187,18 +189,21 @@ async function incrementalMessageIds(accessToken: string, historyId?: string | n
   async function recovery() {
     const ids: string[] = [];
     let token: string | undefined;
+    let recoveryPages = 0;
     do {
       const params = new URLSearchParams({ maxResults:"500", q:"newer_than:7d -in:spam -in:trash -in:sent -in:drafts" });
       if (token) params.set("pageToken",token);
       const list = await gmailFetch<GmailMessageList & {nextPageToken?:string}>(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`,accessToken);
       ids.push(...(list.messages ?? []).map(message=>message.id));
       token=list.nextPageToken;
-    } while(token);
+      recoveryPages++;
+    } while(token && recoveryPages < 2); // Cap recovery to max 2 pages (1000 messages)
     return { ids, newestHistoryId, fallback:true, changes };
   }
   if (!historyId) return recovery();
   const ids = new Set<string>();
   let pageToken: string | undefined;
+  let historyPages = 0;
   try {
     do {
       const params = new URLSearchParams({ startHistoryId: historyId, maxResults: "500" });
@@ -209,7 +214,8 @@ async function incrementalMessageIds(accessToken: string, historyId?: string | n
         if (added.message?.id) ids.add(added.message.id);
       }
       pageToken = page.nextPageToken;
-    } while (pageToken);
+      historyPages++;
+    } while (pageToken && historyPages < 3); // Cap history to max 3 pages (1500 items)
     return { ids: [...ids], newestHistoryId, fallback: false, changes };
   } catch (error) {
     if (!String(error).includes("HTTP 404")) throw error;
@@ -602,7 +608,8 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
         const {error:retryStoreError}=await supabase.from("email_messages").update({processing_status:"failed",processing_error:message,updated_at:new Date().toISOString()}).eq("user_id",userId).eq("google_account_id",accountId).in("google_message_id",processingIds).neq("processing_status","processed");
         if(retryStoreError) console.error(JSON.stringify({service:"gmail-intelligence",stage:"retry-state-persistence-failed",error:retryStoreError.message}));
       }
-      await supabase.from("google_tokens").update({ email_sync_status: "error", email_sync_error: message, updated_at: new Date().toISOString() }).eq("id", accountId).eq("user_id", userId);
+      const isAuthError = /invalid_grant|revoked/i.test(message);
+      await supabase.from("google_tokens").update({ email_sync_status: isAuthError ? "auth_expired" : "error", email_sync_error: message, updated_at: new Date().toISOString() }).eq("id", accountId).eq("user_id", userId);
       console.error(JSON.stringify({ service: "gmail-intelligence", runId, account: accountId.slice(0, 8), stage: "failed", message }));
     }
   }

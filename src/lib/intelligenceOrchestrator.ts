@@ -132,7 +132,7 @@ export async function runIntelligenceSync(
     );
     let audience = supabase
       .from("google_tokens")
-      .select("id,user_id,calendar_time_zone")
+      .select("id,user_id,calendar_time_zone,last_sync_status,email_sync_status")
       .is("disconnected_at", null)
       .order("user_id");
     if (options.userId) audience = audience.eq("user_id", options.userId);
@@ -150,6 +150,12 @@ export async function runIntelligenceSync(
     for (const connection of connections ?? []) {
       const userId = String(connection.user_id);
       const accountId = String(connection.id);
+      if (
+        connection.last_sync_status === "auth_expired" ||
+        connection.email_sync_status === "auth_expired"
+      ) {
+        continue;
+      }
       try {
         const calendar = await syncGoogleCalendarForUser(
           userId,
