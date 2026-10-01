@@ -23,6 +23,8 @@ gcloud iam service-accounts add-iam-policy-binding "ass-gmail-push@$ASS_GCP_PROJ
 gcloud pubsub subscriptions create ass-gmail-push --project="$ASS_GCP_PROJECT" --topic=ass-gmail --push-endpoint=https://ass-pwa.vercel.app/api/gmail/push --push-auth-service-account="ass-gmail-push@$ASS_GCP_PROJECT.iam.gserviceaccount.com" --push-auth-token-audience=https://ass-pwa.vercel.app/api/gmail/push --ack-deadline=30
 ```
 
+> **Production Durability & DLQ Configuration**: See [GMAIL_PUBSUB_PRODUCTION_CONFIG.md](./GMAIL_PUBSUB_PRODUCTION_CONFIG.md) for required exponential retry backoff, Dead Letter Queue (`ass-gmail-dlq`), and DLQ replay instructions.
+
 The operator also needs `iam.serviceAccounts.actAs` on the push service account.
 Domain-restricted sharing may require an exception for Gmail's publishing
 service account. Do not disable identity verification to work around IAM errors.

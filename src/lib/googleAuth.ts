@@ -231,7 +231,7 @@ async function syncConnectedAccount(
     .eq("id", accountId);
 }
 
-async function writeStoredToken(
+export async function writeStoredToken(
   userId: string,
   token: GoogleToken,
   identity: Awaited<ReturnType<typeof fetchGoogleIdentity>>,
@@ -252,6 +252,8 @@ async function writeStoredToken(
     expires_at: token.expires_at ?? null,
     last_sync_status: "ready",
     last_sync_error: null,
+    email_sync_status: "ready",
+    email_sync_error: null,
     updated_at: new Date().toISOString(),
   };
   let accountId = existingAccountId;
@@ -402,34 +404,59 @@ export async function markAccountAuthExpired(
   userId: string,
   accountId: string,
   reason = "invalid_grant",
-) {
+): Promise<boolean> {
   telemetry.increment("auth_expired_accounts");
   const db = getServiceSupabaseClient();
-  if (db) {
-    try {
-      await db
-        .from("google_tokens")
-        .update({
-          last_sync_status: "auth_expired",
-          email_sync_status: "auth_expired",
-          last_sync_error: `Google authorization expired (${reason}); reconnect required`,
-          email_sync_error: `Google authorization expired (${reason}); reconnect required`,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("user_id", userId)
-        .eq("id", accountId);
+  if (!db) {
+    structuredLog("error", {
+      subsystem: "google_auth",
+      event: "mark_auth_expired_failed",
+      user_id: userId,
+      account_id: accountId,
+      error: "Supabase client not configured",
+    });
+    return false;
+  }
 
-      await db
-        .from("connected_accounts")
-        .update({
-          sync_status: "reconnect_required",
-          last_sync_error: `Google authorization expired (${reason}); reconnect required`,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", accountId);
-    } catch {
-      // Do not fail if persistence fails during error recording
-    }
+  const sanitizedReason = reason
+    .replace(/(?:Bearer|token|key)\s+[A-Za-z0-9._~+\/-]+/gi, "[redacted]")
+    .slice(0, 500);
+
+  const [tokensResult, connectedResult] = await Promise.all([
+    db
+      .from("google_tokens")
+      .update({
+        last_sync_status: "auth_expired",
+        email_sync_status: "auth_expired",
+        last_sync_error: `Google authorization expired (${sanitizedReason}); reconnect required`,
+        email_sync_error: `Google authorization expired (${sanitizedReason}); reconnect required`,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", userId)
+      .eq("id", accountId),
+    db
+      .from("connected_accounts")
+      .update({
+        sync_status: "reconnect_required",
+        last_sync_error: `Google authorization expired (${sanitizedReason}); reconnect required`,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", accountId),
+  ]);
+
+  if (tokensResult.error || connectedResult.error) {
+    const errorMsg =
+      tokensResult.error?.message ??
+      connectedResult.error?.message ??
+      "Unknown database error";
+    structuredLog("error", {
+      subsystem: "google_auth",
+      event: "mark_auth_expired_failed",
+      user_id: userId,
+      account_id: accountId,
+      error: errorMsg,
+    });
+    return false;
   }
 
   try {
@@ -439,7 +466,7 @@ export async function markAccountAuthExpired(
       sourceId: `google-auth:${accountId}`,
       actionType: "connection_attention",
       title: "Reconnect Google account",
-      summary: `Google authorization expired (${reason}). Reconnect in Profile.`,
+      summary: `Google authorization expired (${sanitizedReason}). Reconnect in Profile.`,
       priority: "high",
       payload: {
         googleAccountId: accountId,
@@ -455,8 +482,9 @@ export async function markAccountAuthExpired(
     event: "gmail_auth_expired",
     user_id: userId,
     account_id: accountId,
-    reason,
+    reason: sanitizedReason,
   });
+  return true;
 }
 
 async function refreshGoogleToken(userId: string, token: GoogleAccountRecord) {

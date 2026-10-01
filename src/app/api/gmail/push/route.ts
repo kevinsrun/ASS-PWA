@@ -41,17 +41,22 @@ export async function POST(request: NextRequest) {
     }
     notification = decodeGmailPush(JSON.parse(raw));
   } catch (error) {
-    console.error(
-      JSON.stringify({
-        service: "gmail-push",
-        stage: "payload-rejected",
-        message:
-          error instanceof Error ? error.message : "Invalid Gmail notification",
-      }),
-    );
+    structuredLog("warn", {
+      subsystem: "gmail_push",
+      event: "payload_rejected",
+      request_id: correlationId,
+      message:
+        error instanceof Error ? error.message : "Invalid Gmail notification",
+    });
+    // Deterministically acknowledge and drop poison messages so they do not loop forever
     return NextResponse.json(
-      { error: "Invalid Gmail notification" },
-      { status: 400 },
+      {
+        accepted: false,
+        dropped: true,
+        error: error instanceof Error ? error.message : "Invalid Gmail notification",
+        requestId: correlationId,
+      },
+      { status: 200 },
     );
   }
 
@@ -105,15 +110,9 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // Fail-Safe: Circuit breaker trips after repeated persistence failures
+  // Circuit Breaker: When persistence is known failing, signal retryable 503 so Pub/Sub retains redelivery ownership
   if (gmailPushCircuitBreaker.isOpen()) {
-    gmailPushCircuitBreaker.deferPush(
-      notification.email,
-      notification.historyId,
-      notification.notificationId,
-    );
     telemetry.increment("circuit_breaker_activations");
-    telemetry.increment("pushes_acknowledged");
     structuredLog("warn", {
       subsystem: "gmail_push",
       event: "gmail_push_circuit_open",
@@ -123,17 +122,16 @@ export async function POST(request: NextRequest) {
       email: notification.email,
       duration_ms: Date.now() - started,
     });
-    // Return HTTP 202 to acknowledge to Pub/Sub and prevent redelivery storms
     return NextResponse.json(
       {
         accepted: false,
-        deferred: true,
-        circuit: "open",
-        reason:
-          "Persistence circuit breaker open; notification deferred to background sync",
+        error: "Persistence circuit breaker open; Pub/Sub retry required",
         requestId: correlationId,
       },
-      { status: 202 },
+      {
+        status: 503,
+        headers: { "Retry-After": "30" },
+      },
     );
   }
 
@@ -146,11 +144,8 @@ export async function POST(request: NextRequest) {
     );
     telemetry.increment("pushes_acknowledged");
 
-    const accounts = result.accounts;
-    const isCoalesced = result.coalesced;
-    const isStale = result.stale;
-
-    if (isStale) {
+    const disposition = result.disposition;
+    if (disposition === "stale") {
       telemetry.increment("stale_notifications_ignored");
       structuredLog("info", {
         subsystem: "gmail_push",
@@ -158,10 +153,10 @@ export async function POST(request: NextRequest) {
         request_id: correlationId,
         notification_id: notification.notificationId,
         history_id: notification.historyId,
-        accounts,
+        disposition,
         duration_ms: Date.now() - started,
       });
-    } else if (isCoalesced) {
+    } else if (disposition === "coalesced") {
       telemetry.increment("notifications_coalesced");
       structuredLog("info", {
         subsystem: "gmail_push",
@@ -169,18 +164,28 @@ export async function POST(request: NextRequest) {
         request_id: correlationId,
         notification_id: notification.notificationId,
         history_id: notification.historyId,
-        accounts,
+        disposition,
+        duration_ms: Date.now() - started,
+      });
+    } else if (disposition === "auth_expired") {
+      structuredLog("warn", {
+        subsystem: "gmail_push",
+        event: "gmail_push_auth_expired",
+        request_id: correlationId,
+        notification_id: notification.notificationId,
+        history_id: notification.historyId,
+        disposition,
         duration_ms: Date.now() - started,
       });
     } else {
-      telemetry.increment("jobs_created", accounts);
+      telemetry.increment("jobs_created", result.accounts);
       structuredLog("info", {
         subsystem: "gmail_push",
         event: "gmail_push_enqueued",
         request_id: correlationId,
         notification_id: notification.notificationId,
         history_id: notification.historyId,
-        accounts,
+        disposition,
         duration_ms: Date.now() - started,
       });
     }
@@ -188,19 +193,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       accepted: true,
       requestId: correlationId,
-      accounts,
-      coalesced: isCoalesced,
-      stale: isStale,
+      disposition,
+      accounts: result.accounts,
+      coalesced: result.coalesced,
+      stale: result.stale,
     });
   } catch (error) {
     gmailPushCircuitBreaker.recordFailure(error);
-    gmailPushCircuitBreaker.deferPush(
-      notification.email,
-      notification.historyId,
-      notification.notificationId,
-    );
     telemetry.increment("persistence_failures");
-    telemetry.increment("pushes_acknowledged");
     structuredLog("error", {
       subsystem: "gmail_push",
       event: "gmail_push_persistence_failed",
@@ -211,15 +211,17 @@ export async function POST(request: NextRequest) {
       error: error instanceof Error ? error.message : "Persistence failed",
       duration_ms: Date.now() - started,
     });
-    // CRITICAL: Return HTTP 202 so Google Pub/Sub does not enter an infinite retry amplification loop
+    // Return retryable HTTP 503 so Pub/Sub retains redelivery responsibility
     return NextResponse.json(
       {
         accepted: false,
-        deferred: true,
-        error: "Persistence failed; notification deferred to background sync",
+        error: "Persistence unavailable; Pub/Sub retry required",
         requestId: correlationId,
       },
-      { status: 202 },
+      {
+        status: 503,
+        headers: { "Retry-After": "10" },
+      },
     );
   }
 }
