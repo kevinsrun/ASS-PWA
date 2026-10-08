@@ -8,7 +8,7 @@ export function getServerSupabaseClient() {
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  if (!url || !key) {
+  if (!url || !url.startsWith("http") || !key) {
     return null;
   }
 
@@ -26,7 +26,7 @@ export function getServiceSupabaseClient() {
     process.env.SUPABASE_SECRET_KEY ??
     process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!url || !key) return null;
+  if (!url || !url.startsWith("http") || !key) return null;
 
   return createClient(url, key, {
     auth: {

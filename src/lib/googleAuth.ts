@@ -6,6 +6,8 @@ import {
   timingSafeEqual,
 } from "crypto";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
+import { structuredLog } from "@/lib/structuredLog";
+import { telemetry } from "@/lib/metrics";
 
 export type GoogleToken = {
   id?: string;
@@ -16,6 +18,14 @@ export type GoogleToken = {
   scope?: string;
   token_type?: string;
 };
+
+export class GoogleAuthExpiredError extends Error {
+  readonly isAuthExpired = true;
+  constructor(message = "Google token request failed: invalid_grant") {
+    super(message);
+    this.name = "GoogleAuthExpiredError";
+  }
+}
 
 export type GoogleAccountRecord = GoogleToken & {
   id: string;
@@ -29,6 +39,8 @@ export type GoogleAccountRecord = GoogleToken & {
   lastEmailSyncAt: string | null;
   gmailHistoryId: string | null;
   calendarTimeZone: string;
+  lastSyncStatus?: string | null;
+  emailSyncStatus?: string | null;
 };
 
 type OAuthState = { userId: string; expiresAt: number; nonce: string };
@@ -150,6 +162,12 @@ async function requestGoogleToken(params: URLSearchParams) {
   if (!response.ok) {
     const reason =
       typeof body.error === "string" ? body.error : `HTTP ${response.status}`;
+    if (
+      reason === "invalid_grant" ||
+      /invalid_grant|token_revoked/i.test(String(body.error_description ?? ""))
+    ) {
+      throw new GoogleAuthExpiredError("Google token request failed: invalid_grant");
+    }
     throw new Error(`Google token request failed: ${reason}`);
   }
   const token = body as GoogleToken;
@@ -213,7 +231,7 @@ async function syncConnectedAccount(
     .eq("id", accountId);
 }
 
-async function writeStoredToken(
+export async function writeStoredToken(
   userId: string,
   token: GoogleToken,
   identity: Awaited<ReturnType<typeof fetchGoogleIdentity>>,
@@ -234,6 +252,8 @@ async function writeStoredToken(
     expires_at: token.expires_at ?? null,
     last_sync_status: "ready",
     last_sync_error: null,
+    email_sync_status: "ready",
+    email_sync_error: null,
     updated_at: new Date().toISOString(),
   };
   let accountId = existingAccountId;
@@ -314,7 +334,7 @@ export async function listGoogleAccounts(userId: string) {
   const { data, error } = await supabase
     .from("google_tokens")
     .select(
-      "id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,scope,last_sync_status,last_sync_error,last_successful_sync_at,last_email_sync_at,email_sync_error,gmail_history_id,calendar_time_zone",
+      "id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,scope,last_sync_status,last_sync_error,last_successful_sync_at,last_email_sync_at,email_sync_status,email_sync_error,gmail_history_id,calendar_time_zone",
     )
     .eq("user_id", userId)
     .is("disconnected_at", null)
@@ -333,7 +353,7 @@ export async function readStoredGoogleToken(
   let query = supabase
     .from("google_tokens")
     .select(
-      "id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,access_token,refresh_token,scope,token_type,expires_at,last_successful_sync_at,last_email_sync_at,gmail_history_id,calendar_time_zone",
+      "id,user_id,google_subject,connected_email,display_name,avatar_url,account_color,access_token,refresh_token,scope,token_type,expires_at,last_successful_sync_at,last_email_sync_at,gmail_history_id,calendar_time_zone,last_sync_status,email_sync_status",
     )
     .eq("user_id", userId)
     .is("disconnected_at", null);
@@ -371,23 +391,137 @@ export async function readStoredGoogleToken(
     calendarTimeZone: data.calendar_time_zone
       ? String(data.calendar_time_zone)
       : "UTC",
+    lastSyncStatus: data.last_sync_status
+      ? String(data.last_sync_status)
+      : null,
+    emailSyncStatus: data.email_sync_status
+      ? String(data.email_sync_status)
+      : null,
   } satisfies GoogleAccountRecord;
+}
+
+export async function markAccountAuthExpired(
+  userId: string,
+  accountId: string,
+  reason = "invalid_grant",
+): Promise<boolean> {
+  telemetry.increment("auth_expired_accounts");
+  const db = getServiceSupabaseClient();
+  if (!db) {
+    structuredLog("error", {
+      subsystem: "google_auth",
+      event: "mark_auth_expired_failed",
+      user_id: userId,
+      account_id: accountId,
+      error: "Supabase client not configured",
+    });
+    return false;
+  }
+
+  const sanitizedReason = reason
+    .replace(/(?:Bearer|token|key)\s+[A-Za-z0-9._~+\/-]+/gi, "[redacted]")
+    .slice(0, 500);
+
+  const [tokensResult, connectedResult] = await Promise.all([
+    db
+      .from("google_tokens")
+      .update({
+        last_sync_status: "auth_expired",
+        email_sync_status: "auth_expired",
+        last_sync_error: `Google authorization expired (${sanitizedReason}); reconnect required`,
+        email_sync_error: `Google authorization expired (${sanitizedReason}); reconnect required`,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", userId)
+      .eq("id", accountId),
+    db
+      .from("connected_accounts")
+      .update({
+        sync_status: "reconnect_required",
+        last_sync_error: `Google authorization expired (${sanitizedReason}); reconnect required`,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", accountId),
+  ]);
+
+  if (tokensResult.error || connectedResult.error) {
+    const errorMsg =
+      tokensResult.error?.message ??
+      connectedResult.error?.message ??
+      "Unknown database error";
+    structuredLog("error", {
+      subsystem: "google_auth",
+      event: "mark_auth_expired_failed",
+      user_id: userId,
+      account_id: accountId,
+      error: errorMsg,
+    });
+    return false;
+  }
+
+  try {
+    const { createAssistantAction } = await import("@/lib/objectCreation");
+    await createAssistantAction(userId, {
+      sourceKind: "integration",
+      sourceId: `google-auth:${accountId}`,
+      actionType: "connection_attention",
+      title: "Reconnect Google account",
+      summary: `Google authorization expired (${sanitizedReason}). Reconnect in Profile.`,
+      priority: "high",
+      payload: {
+        googleAccountId: accountId,
+        recommendedAction: "Reconnect Google account in Profile",
+      },
+    });
+  } catch {
+    // Ignore assistant action failure
+  }
+
+  structuredLog("warn", {
+    subsystem: "google_auth",
+    event: "gmail_auth_expired",
+    user_id: userId,
+    account_id: accountId,
+    reason: sanitizedReason,
+  });
+  return true;
 }
 
 async function refreshGoogleToken(userId: string, token: GoogleAccountRecord) {
   if (!token.refresh_token) {
-    throw new Error(
+    await markAccountAuthExpired(userId, token.id, "no refresh token was stored");
+    throw new GoogleAuthExpiredError(
       "Google authorization expired: no refresh token was stored",
     );
   }
-  const refreshed = await requestGoogleToken(
-    new URLSearchParams({
-      refresh_token: token.refresh_token,
-      client_id: requireEnv("GOOGLE_CLIENT_ID"),
-      client_secret: requireEnv("GOOGLE_CLIENT_SECRET"),
-      grant_type: "refresh_token",
-    }),
-  );
+  let refreshed: GoogleToken;
+  try {
+    refreshed = await requestGoogleToken(
+      new URLSearchParams({
+        refresh_token: token.refresh_token,
+        client_id: requireEnv("GOOGLE_CLIENT_ID"),
+        client_secret: requireEnv("GOOGLE_CLIENT_SECRET"),
+        grant_type: "refresh_token",
+      }),
+    );
+  } catch (error) {
+    if (
+      error instanceof GoogleAuthExpiredError ||
+      /invalid_grant|token_revoked/i.test(
+        error instanceof Error ? error.message : "",
+      )
+    ) {
+      await markAccountAuthExpired(
+        userId,
+        token.id,
+        error instanceof Error ? error.message : "invalid_grant",
+      );
+      throw new GoogleAuthExpiredError(
+        `Google token request failed: invalid_grant; reconnect required for ${token.email ?? token.id}`,
+      );
+    }
+    throw error;
+  }
   const merged = {
     ...token,
     ...refreshed,
@@ -430,6 +564,14 @@ export async function getGoogleAccessToken(
 ) {
   const token = await readStoredGoogleToken(userId, accountId);
   if (!token) throw new Error("Google Calendar is not connected");
+  if (
+    token.lastSyncStatus === "auth_expired" ||
+    token.emailSyncStatus === "auth_expired"
+  ) {
+    throw new GoogleAuthExpiredError(
+      `Google account authorization expired (invalid_grant); reconnect required for ${token.email ?? token.id}`,
+    );
+  }
   if (
     forceRefresh ||
     !token.expires_at ||

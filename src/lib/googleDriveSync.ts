@@ -1,6 +1,11 @@
 import { randomUUID } from "crypto";
 import { createAssistantAction } from "@/lib/objectCreation";
-import { getGoogleAccessToken, listGoogleAccounts } from "@/lib/googleAuth";
+import {
+  getGoogleAccessToken,
+  GoogleAuthExpiredError,
+  listGoogleAccounts,
+  markAccountAuthExpired,
+} from "@/lib/googleAuth";
 import { listDriveFolder, type DriveFile } from "@/lib/googleDrive";
 import { getServiceSupabaseClient } from "@/lib/supabaseServer";
 import { ingestDriveFile } from "@/lib/driveIngestion";
@@ -19,6 +24,9 @@ async function driveFetch<T>(token: string, path: string) {
   });
   if (!response.ok) {
     const body = await response.text().catch(() => "");
+    if (response.status === 401) {
+      throw new GoogleAuthExpiredError("Google Drive returned HTTP 401: Unauthorized. Reconnect required.");
+    }
     if (response.status === 403 && /insufficient authentication scopes|insufficientPermissions/i.test(body)) {
       throw new Error("Google Drive permission is missing. Reconnect this Google account from Settings to grant Drive read access.");
     }
@@ -42,6 +50,13 @@ export async function syncGoogleDriveForUser(userId: string, onlyAccountId?: str
 
   for (const account of accounts) {
     const accountId = String(account.id);
+    if (
+      !onlyAccountId &&
+      (account.last_sync_status === "auth_expired" ||
+        account.email_sync_status === "auth_expired")
+    ) {
+      continue;
+    }
     const now = new Date().toISOString();
     try {
       await supabase.from("drive_sync_state").upsert({ user_id: userId, google_account_id: accountId, sync_status: "syncing", last_sync_error: null, updated_at: now }, { onConflict: "user_id,google_account_id" });
@@ -118,7 +133,27 @@ export async function syncGoogleDriveForUser(userId: string, onlyAccountId?: str
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown Drive sync failure";
       failures.push(`${accountId.slice(0, 8)}: ${message}`);
-      await supabase.from("drive_sync_state").upsert({ user_id: userId, google_account_id: accountId, sync_status: "error", last_sync_error: message, updated_at: new Date().toISOString() }, { onConflict: "user_id,google_account_id" });
+      const isAuthError =
+        error instanceof GoogleAuthExpiredError ||
+        /invalid_grant|token_revoked|auth_expired|401/i.test(message);
+      if (isAuthError) {
+        await markAccountAuthExpired(userId, accountId, message);
+        await supabase.from("drive_sync_state").upsert({
+          user_id: userId,
+          google_account_id: accountId,
+          sync_status: "reconnect_required",
+          last_sync_error: message,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "user_id,google_account_id" });
+      } else {
+        await supabase.from("drive_sync_state").upsert({
+          user_id: userId,
+          google_account_id: accountId,
+          sync_status: "error",
+          last_sync_error: message,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "user_id,google_account_id" });
+      }
       console.error(JSON.stringify({ service: "drive-sync", runId, account: accountId.slice(0, 8), stage: "failed", message }));
     }
   }

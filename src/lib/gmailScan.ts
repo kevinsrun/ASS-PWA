@@ -17,6 +17,7 @@ import { emailDisposition } from "@/lib/emailDisposition";
 import { getAutomationSettings } from "@/lib/automationSettings";
 import { flushProcessedGmailLabels } from "@/lib/gmailLabelAutomation";
 import { unsubscribeObviousJunk } from "@/lib/emailUnsubscribe";
+import { telemetry } from "@/lib/metrics";
 
 type GmailMessageList = { messages?: Array<{ id: string; threadId?: string }> };
 type GmailPart = { mimeType?: string; body?: { data?: string }; parts?: GmailPart[]; headers?: Array<{name:string;value:string}> };
@@ -140,9 +141,15 @@ export async function readGmailThread(userId:string,accountId:string,threadId:st
   return (result.messages ?? []).slice(-12).map(message=>({id:message.id,subject:header(message,"Subject"),sender:header(message,"From"),replyTo:header(message,"Reply-To"),messageId:header(message,"Message-ID"),date:header(message,"Date"),body:messageText(message),truncated:true}));
 }
 
-async function gmailFetch<T>(url: string, accessToken: string, attempt = 0): Promise<T> {
+async function gmailFetch<T>(url: string, accessToken: string, attempt = 0, deadlineMs?: number): Promise<T> {
+  telemetry.increment("gmail_api_requests");
+  if (deadlineMs && Date.now() + 500 >= deadlineMs) {
+    throw new Error("Worker global deadline exceeded before Gmail request");
+  }
+  const remaining = deadlineMs ? Math.max(500, deadlineMs - Date.now()) : 20_000;
+  const timeoutMs = Math.min(20_000, remaining);
   const response = await fetch(url, {
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(timeoutMs),
     headers: { Authorization: `Bearer ${accessToken}` },
     cache: "no-store",
   });
@@ -151,8 +158,11 @@ async function gmailFetch<T>(url: string, accessToken: string, attempt = 0): Pro
     const delay = Number.isFinite(retryAfter) && retryAfter > 0
       ? Math.min(retryAfter * 1000, 10_000)
       : 600 * 2 ** attempt;
+    if (deadlineMs && Date.now() + delay + 500 >= deadlineMs) {
+      throw new Error(`Gmail returned HTTP ${response.status}; retry aborted because worker deadline is exhausted`);
+    }
     await new Promise((resolve) => setTimeout(resolve, delay));
-    return gmailFetch<T>(url, accessToken, attempt + 1);
+    return gmailFetch<T>(url, accessToken, attempt + 1, deadlineMs);
   }
   if (!response.ok) {
     const details = await response.text().catch(() => "");
@@ -161,14 +171,15 @@ async function gmailFetch<T>(url: string, accessToken: string, attempt = 0): Pro
   return (await response.json()) as T;
 }
 
-async function fetchMessages(ids: string[], accessToken: string) {
+async function fetchMessages(ids: string[], accessToken: string, deadlineMs?: number) {
   const messages: GmailMessage[] = [];
   // Gmail applies per-user rate limits. Small batches prevent a first scan from
   // turning 25 parallel metadata calls into a burst-limit failure.
   for (let index = 0; index < ids.length; index += 4) {
+    if (deadlineMs && Date.now() + 500 >= deadlineMs) break;
     const batch = await Promise.all(ids.slice(index, index + 4).map(async (id) => {
       try {
-        return await gmailFetch<GmailMessage>(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, accessToken);
+        return await gmailFetch<GmailMessage>(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, accessToken, 0, deadlineMs);
       } catch (error) {
         if (!String(error).includes("Gmail returned HTTP 404")) throw error;
         console.info(JSON.stringify({ service: "gmail-intelligence", stage: "message-no-longer-available", messageId: id }));
@@ -180,36 +191,42 @@ async function fetchMessages(ids: string[], accessToken: string) {
   return messages;
 }
 
-async function incrementalMessageIds(accessToken: string, historyId?: string | null) {
-  const profile = await gmailFetch<{ historyId?: string }>("https://gmail.googleapis.com/gmail/v1/users/me/profile", accessToken);
+async function incrementalMessageIds(accessToken: string, historyId?: string | null, deadlineMs?: number) {
+  const profile = await gmailFetch<{ historyId?: string }>("https://gmail.googleapis.com/gmail/v1/users/me/profile", accessToken, 0, deadlineMs);
   const newestHistoryId = profile.historyId ?? historyId ?? null;
   const changes: NonNullable<GmailHistoryResponse["history"]> = [];
   async function recovery() {
     const ids: string[] = [];
     let token: string | undefined;
+    let recoveryPages = 0;
     do {
+      if (deadlineMs && Date.now() + 1000 >= deadlineMs) break;
       const params = new URLSearchParams({ maxResults:"500", q:"newer_than:7d -in:spam -in:trash -in:sent -in:drafts" });
       if (token) params.set("pageToken",token);
-      const list = await gmailFetch<GmailMessageList & {nextPageToken?:string}>(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`,accessToken);
+      const list = await gmailFetch<GmailMessageList & {nextPageToken?:string}>(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`,accessToken, 0, deadlineMs);
       ids.push(...(list.messages ?? []).map(message=>message.id));
       token=list.nextPageToken;
-    } while(token);
+      recoveryPages++;
+    } while(token && recoveryPages < 2); // Cap recovery to max 2 pages (1000 messages)
     return { ids, newestHistoryId, fallback:true, changes };
   }
   if (!historyId) return recovery();
   const ids = new Set<string>();
   let pageToken: string | undefined;
+  let historyPages = 0;
   try {
     do {
+      if (deadlineMs && Date.now() + 1000 >= deadlineMs) break;
       const params = new URLSearchParams({ startHistoryId: historyId, maxResults: "500" });
       if (pageToken) params.set("pageToken", pageToken);
-      const page = await gmailFetch<GmailHistoryResponse>(`https://gmail.googleapis.com/gmail/v1/users/me/history?${params}`, accessToken);
+      const page = await gmailFetch<GmailHistoryResponse>(`https://gmail.googleapis.com/gmail/v1/users/me/history?${params}`, accessToken, 0, deadlineMs);
       changes.push(...page.history ?? []);
       for (const entry of page.history ?? []) for (const added of entry.messagesAdded ?? []) {
         if (added.message?.id) ids.add(added.message.id);
       }
       pageToken = page.nextPageToken;
-    } while (pageToken);
+      historyPages++;
+    } while (pageToken && historyPages < 3); // Cap history to max 3 pages (1500 items)
     return { ids: [...ids], newestHistoryId, fallback: false, changes };
   } catch (error) {
     if (!String(error).includes("HTTP 404")) throw error;
@@ -379,7 +396,13 @@ async function prepareReply(userId:string, accountId:string, message:GmailMessag
   return {body,thread,windows};
 }
 
-async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessageId?:string, batchLimit=5) {
+async function scanUnlocked(
+  userId: string,
+  onlyAccountId?: string,
+  forceMessageId?: string,
+  batchLimit = 5,
+  deadlineMs?: number,
+) {
   const runId = randomUUID();
   const supabase = getServiceSupabaseClient();
   if (!supabase) throw new Error("A Supabase server key is not configured");
@@ -400,10 +423,13 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
     const accountId = String(account.id);
     let processingIds: string[] = [];
     try {
+      if (deadlineMs && Date.now() + 2_000 >= deadlineMs) {
+        throw new Error("Worker global deadline reached before mailbox scan");
+      }
       await supabase.from("google_tokens").update({ email_sync_status: "syncing", email_sync_error: null }).eq("id", accountId).eq("user_id", userId);
       const accessToken = await getGoogleAccessToken(userId, accountId);
       await flushProcessedGmailLabels(userId, accountId, accessToken, account.scope ? String(account.scope) : null, automation);
-      const incremental = await incrementalMessageIds(accessToken, account.gmail_history_id ? String(account.gmail_history_id) : null);
+      const incremental = await incrementalMessageIds(accessToken, account.gmail_history_id ? String(account.gmail_history_id) : null, deadlineMs);
       // Label/deletion changes update state without rerunning inference or
       // destroying user-reviewed calendar objects/drafts.
       await applyMailboxChanges(userId,accountId,incremental.changes);
@@ -434,7 +460,7 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
       const seen = new Set([...removedIds, ...existing.filter((row) => row.status !== "pending" || (!forceMessageId && !unfinishedIds.has(String(row.external_id)))).map((row) => String(row.external_id))]);
       const pendingIds = ids.filter((id) => !seen.has(id));
       const batchIds = pendingIds.slice(0, batchLimit);
-      const messages = await fetchMessages(batchIds, accessToken);
+      const messages = await fetchMessages(batchIds, accessToken, deadlineMs);
       const fetchedIds = new Set(messages.map((message) => message.id));
       const missingIds = batchIds.filter((id) => !fetchedIds.has(id));
       if (missingIds.length) {
@@ -448,6 +474,9 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
       if(messages.length) {
         const {error:processingError}=await supabase.from("email_messages").upsert(messages.map(message=>({user_id:userId,google_account_id:accountId,google_message_id:message.id,received_at:message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null,processing_status:"processing",processing_error:null,updated_at:new Date().toISOString()})),{onConflict:"user_id,google_account_id,google_message_id"});
         if(processingError) throw processingError;
+      }
+      if (deadlineMs && Date.now() + 2_500 >= deadlineMs) {
+        throw new Error("Worker global deadline reached before email classification");
       }
       const classifications = await withAIUsage(userId,"email_triage",()=>classify(messages, context.prompt,Boolean(forceMessageId)));
       const byId = new Map(classifications.map((item) => [item.id, item]));
@@ -602,14 +631,31 @@ async function scanUnlocked(userId: string, onlyAccountId?: string, forceMessage
         const {error:retryStoreError}=await supabase.from("email_messages").update({processing_status:"failed",processing_error:message,updated_at:new Date().toISOString()}).eq("user_id",userId).eq("google_account_id",accountId).in("google_message_id",processingIds).neq("processing_status","processed");
         if(retryStoreError) console.error(JSON.stringify({service:"gmail-intelligence",stage:"retry-state-persistence-failed",error:retryStoreError.message}));
       }
-      await supabase.from("google_tokens").update({ email_sync_status: "error", email_sync_error: message, updated_at: new Date().toISOString() }).eq("id", accountId).eq("user_id", userId);
+      const isAuthError = /invalid_grant|revoked/i.test(message);
+      if (isAuthError) {
+        const authModule = await import("@/lib/googleAuth");
+        if (typeof authModule.markAccountAuthExpired === "function") {
+          await authModule.markAccountAuthExpired(userId, accountId, message);
+        } else {
+          await supabase.from("google_tokens").update({ email_sync_status: "auth_expired", email_sync_error: message, updated_at: new Date().toISOString() }).eq("id", accountId).eq("user_id", userId);
+        }
+      } else {
+        const { error: syncError } = await supabase.from("google_tokens").update({ email_sync_status: "error", email_sync_error: message, updated_at: new Date().toISOString() }).eq("id", accountId).eq("user_id", userId);
+        if (syncError) console.error(JSON.stringify({ service: "gmail-intelligence", stage: "sync-error-persistence-failed", error: syncError.message }));
+      }
       console.error(JSON.stringify({ service: "gmail-intelligence", runId, account: accountId.slice(0, 8), stage: "failed", message }));
     }
   }
   return { connected: accounts.length > 0, suggestions: all, accounts: accounts.length, failures, emailsScanned, actionItemsCreated, draftsCreated, calendarEventsCreated,backlogRemaining:hasBacklog };
 }
 
-export async function scanRecentGmailSuggestions(userId:string, onlyAccountId?:string, forceMessageId?:string, batchLimit=5) {
+export async function scanRecentGmailSuggestions(
+  userId: string,
+  onlyAccountId?: string,
+  forceMessageId?: string,
+  batchLimit = 5,
+  options?: { deadlineMs?: number; budgetMs?: number },
+) {
   const accounts=(await listGoogleAccounts(userId)).filter(account=>!onlyAccountId || account.id===onlyAccountId);
   const db=getServiceSupabaseClient();
   if(!db) throw new Error("A Supabase server key is not configured");
@@ -622,13 +668,17 @@ export async function scanRecentGmailSuggestions(userId:string, onlyAccountId?:s
     if(!owned || owned.status!=="pending" || feedback.data?.length) {combined.failures.push("This email has a user decision or is unavailable; reanalysis will not overwrite it");return combined;}
   }
   for(const account of accounts) {
+    if (options?.deadlineMs && Date.now() + 2_000 >= options.deadlineMs) {
+      combined.failures.push("Deadline exceeded before account lease acquisition");
+      break;
+    }
     const worker=randomUUID();
     const args={p_user_id:userId,p_account_id:account.id,p_worker_id:worker};
     const {data:acquired,error}=await db.rpc("acquire_gmail_lease",args);
     if(error) throw error;
     if(!acquired) { combined.busy=true; continue; }
     try {
-      const result=await scanUnlocked(userId,account.id,forceMessageId,batchLimit);
+      const result=await scanUnlocked(userId,account.id,forceMessageId,batchLimit,options?.deadlineMs);
       combined.suggestions.push(...result.suggestions); combined.failures.push(...result.failures);
       combined.backlogRemaining ||= result.backlogRemaining;
       for(const metric of ["emailsScanned","actionItemsCreated","draftsCreated","calendarEventsCreated"] as const) combined[metric]+=result[metric];

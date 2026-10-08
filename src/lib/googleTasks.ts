@@ -20,12 +20,18 @@ export async function syncGoogleTasks(
   if (!db) throw new Error("Cloud Tasks is not configured");
   const { data: account, error } = await db
     .from("google_tokens")
-    .select("id,tasks_enabled,google_tasklist_id,scope")
+    .select("id,tasks_enabled,google_tasklist_id,scope,last_sync_status,email_sync_status")
     .eq("user_id", userId)
     .eq("id", accountId)
     .is("disconnected_at", null)
     .single();
   if (error || !account) throw new Error("Connected Google account not found");
+  if (
+    account.last_sync_status === "auth_expired" ||
+    account.email_sync_status === "auth_expired"
+  ) {
+    return { synced: 0, disabled: true, authExpired: true };
+  }
   if (!account.tasks_enabled) return { synced: 0, disabled: true };
   if (
     !String(account.scope ?? "")
