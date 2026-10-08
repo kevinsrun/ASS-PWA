@@ -1,8 +1,10 @@
 import { randomUUID } from "crypto";
 import {
   getGoogleAccessToken,
+  GoogleAuthExpiredError,
   googleConfiguration,
   listGoogleAccounts,
+  markAccountAuthExpired,
   readStoredGoogleToken,
 } from "@/lib/googleAuth";
 import { labelToMinutes } from "@/lib/dateTime";
@@ -790,11 +792,15 @@ async function syncGoogleCalendarAccount(
     return { state: "synced" as const, imported: totals.imported };
   } catch (error) {
     const message = errorMessage(error, "Unknown calendar sync failure");
+    const isAuthExpired =
+      error instanceof GoogleAuthExpiredError ||
+      (error instanceof CalendarSyncError && error.state === "auth_expired") ||
+      /refresh token|invalid_grant|authorization expired|token_revoked/i.test(message);
     const state =
-      error instanceof CalendarSyncError
-        ? error.state
-        : /refresh token|invalid_grant|authorization expired/i.test(message)
-          ? "auth_expired"
+      isAuthExpired
+        ? "auth_expired"
+        : error instanceof CalendarSyncError
+          ? error.state
           : /not configured|migration is missing/i.test(message)
             ? "misconfigured"
             : "error";
@@ -807,6 +813,9 @@ async function syncGoogleCalendarAccount(
         message,
       })
     );
+    if (state === "auth_expired") {
+      await markAccountAuthExpired(userId, accountId, message);
+    }
     await setSyncState(userId, accountId, state, {
       last_sync_attempt_at: attemptedAt,
       last_sync_error: message,
@@ -824,8 +833,14 @@ export async function syncGoogleCalendarForUser(
   const accounts = await listGoogleAccounts(userId);
   const targets = onlyAccountId
     ? accounts.filter((account) => String(account.id) === onlyAccountId)
-    : accounts;
-  if (targets.length === 0) return getCalendarSyncStatus(userId);
+    : accounts.filter(
+        (account) =>
+          account.last_sync_status !== "auth_expired" &&
+          account.email_sync_status !== "auth_expired"
+      );
+  if (targets.length === 0) {
+    return { ...(await getCalendarSyncStatus(userId)), eventsImported: 0 };
+  }
   const results = [];
   for (const account of targets) {
     results.push(

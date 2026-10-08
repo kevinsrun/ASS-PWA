@@ -1,0 +1,8 @@
+docs
+scripts/ai
+scripts/verify-*.mjs
+scripts/ass-overnight-runner.mjs
+supabase/migrations
+.github
+*.md
+!README.md

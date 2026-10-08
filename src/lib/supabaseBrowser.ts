@@ -28,7 +28,7 @@ export function getBrowserSupabaseClient(): SupabaseClient<LooseDatabase> | null
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  if (!url || !key) {
+  if (!url || !url.startsWith("http") || !key) {
     return null;
   }
 

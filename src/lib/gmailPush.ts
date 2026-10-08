@@ -135,6 +135,110 @@ export async function persistGmailPush(
     }
   }
 
+  // Resilient fallback: Direct table operations if RPCs fail due to missing/unmigrated function
+  if (
+    rpcError &&
+    !/connection refused|pool exhausted|network/i.test(String(rpcError.message ?? ""))
+  ) {
+    try {
+      const { data: accounts, error: accError } = await db
+        .from("google_tokens")
+        .select("id, user_id, gmail_history_id, email_sync_status, last_sync_status")
+        .ilike("connected_email", notification.email)
+        .is("disconnected_at", null);
+
+      if (!accError && accounts && accounts.length > 0) {
+        const acc = accounts[0];
+        const isAuthExpired =
+          acc.email_sync_status === "auth_expired" || acc.last_sync_status === "auth_expired";
+
+        if (isAuthExpired) {
+          data = {
+            disposition: "auth_expired",
+            account_id: acc.id,
+            user_id: acc.user_id,
+            history_id: notification.historyId,
+          };
+          rpcError = null;
+        } else {
+          const isStale =
+            acc.gmail_history_id &&
+            /^\d+$/.test(acc.gmail_history_id) &&
+            BigInt(notification.historyId) <= BigInt(acc.gmail_history_id);
+
+          if (isStale) {
+            data = {
+              disposition: "stale",
+              account_id: acc.id,
+              user_id: acc.user_id,
+              history_id: notification.historyId,
+            };
+            rpcError = null;
+          } else {
+            const { data: pendingRows } = await db
+              .from("gmail_processing_queue")
+              .select("id, history_id")
+              .eq("google_account_id", acc.id)
+              .in("status", ["queued", "retry_wait"])
+              .limit(1);
+
+            const pending = pendingRows?.[0];
+            if (pending) {
+              if (BigInt(notification.historyId) > BigInt(pending.history_id)) {
+                await db
+                  .from("gmail_processing_queue")
+                  .update({
+                    history_id: notification.historyId,
+                    notification_id: notification.notificationId,
+                    intake_request_id: intakeRequestId,
+                    next_attempt_at: new Date().toISOString(),
+                  })
+                  .eq("id", pending.id);
+              }
+              data = {
+                disposition: "coalesced",
+                account_id: acc.id,
+                user_id: acc.user_id,
+                history_id: notification.historyId,
+              };
+              rpcError = null;
+            } else {
+              const { error: insertError } = await db
+                .from("gmail_processing_queue")
+                .insert({
+                  user_id: acc.user_id,
+                  google_account_id: acc.id,
+                  history_id: notification.historyId,
+                  notification_id: notification.notificationId,
+                  intake_request_id: intakeRequestId,
+                  status: "queued",
+                });
+              if (!insertError) {
+                data = {
+                  disposition: "inserted",
+                  account_id: acc.id,
+                  user_id: acc.user_id,
+                  history_id: notification.historyId,
+                };
+                rpcError = null;
+              }
+            }
+          }
+        }
+      } else if (!accError && (!accounts || accounts.length === 0)) {
+        data = {
+          disposition: "no_account",
+          account_id: null,
+          user_id: null,
+          history_id: notification.historyId,
+        };
+        rpcError = null;
+      }
+    } catch {
+      // Maintain original rpcError if direct table fallback fails
+    }
+  }
+
   if (rpcError) {
     throw (rpcError instanceof Error ? rpcError : new Error(rpcError.message ?? "Persistence failed"));
   }

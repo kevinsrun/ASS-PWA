@@ -22,6 +22,10 @@ begin
   end loop;
 end $$;
 
+-- Fix the column default for status so any insert without explicit status uses 'queued'
+alter table public.gmail_processing_queue alter column status set default 'queued';
+update public.gmail_processing_queue set status = 'queued' where status = 'pending';
+
 -- Enforce the invariant at the database level:
 -- At most ONE pending/retry_wait job may exist per Google account at any time.
 create unique index if not exists gmail_queue_one_pending_per_account

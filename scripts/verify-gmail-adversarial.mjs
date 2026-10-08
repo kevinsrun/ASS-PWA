@@ -29,6 +29,7 @@ function load(name) {
 let externalApiCalls = { gmail: 0, gemini: 0, calendar: 0, drive: 0, dbRpcCalls: 0 };
 let forceDbFailure = false;
 let simulateSupabaseError = false;
+let simulateRpcFailure = false;
 
 const accounts = [
   {
@@ -73,6 +74,10 @@ class Query {
     this.filters.push(row => row[k] === v);
     return this;
   }
+  ilike(k, v) {
+    this.filters.push(row => String(row[k] ?? "").toLowerCase() === String(v).toLowerCase());
+    return this;
+  }
   is(k, v) {
     this.filters.push(row => (row[k] ?? null) === v);
     return this;
@@ -90,16 +95,20 @@ class Query {
   maybeSingle() { this.one = true; return this; }
   single() { this.one = true; return this; }
   update(value) { this.updated = value; return this; }
+  insert(value) {
+    this.inserted = Array.isArray(value) ? value : [value];
+    return this;
+  }
   upsert(value, options) {
     this.inserted = Array.isArray(value) ? value : [value];
     this.keys = options?.onConflict?.split(',') ?? ['id'];
     return this;
   }
   then(resolve) {
-    if (simulateSupabaseError) {
+    if (simulateSupabaseError || forceDbFailure) {
       return Promise.resolve({
         data: null,
-        error: { message: "Simulated Supabase write error: connection lost" },
+        error: { message: forceDbFailure ? "Database connection refused; pool exhausted" : "Simulated Supabase write error: connection lost" },
       }).then(resolve);
     }
 
@@ -133,6 +142,9 @@ const db = {
     externalApiCalls.dbRpcCalls++;
     if (forceDbFailure) {
       return { data: null, error: { message: "Database connection refused; pool exhausted" } };
+    }
+    if (simulateRpcFailure) {
+      return { data: null, error: { message: "function enqueue_gmail_push_v2() does not exist; schema cache reload" } };
     }
 
     if (name === 'enqueue_gmail_push_v2') {
@@ -523,6 +535,25 @@ console.log("\n[Blocker 3] Versioned RPC enqueue_gmail_push_v2 Structured Dispos
   assert.equal(res5.disposition, 'no_account');
   assert.equal(res5.accounts, 0);
 
+  // Test 6: Resilient Direct DB Fallback when RPCs fail / are unmigrated
+  tables.google_tokens[0].email_sync_status = 'ready';
+  simulateRpcFailure = true;
+  tables.gmail_processing_queue.length = 0;
+  const resFallback = await push.persistGmailPush({ email: 'user@example.test', historyId: '190', notificationId: 'pub-direct-1' });
+  assert.equal(resFallback.disposition, 'inserted');
+  assert.equal(resFallback.accounts, 1);
+  assert.equal(tables.gmail_processing_queue.length, 1);
+  assert.equal(tables.gmail_processing_queue[0].history_id, '190');
+  assert.equal(tables.gmail_processing_queue[0].status, 'queued');
+
+  // Coalesce via direct fallback
+  const resFallbackCoalesce = await push.persistGmailPush({ email: 'user@example.test', historyId: '195', notificationId: 'pub-direct-2' });
+  assert.equal(resFallbackCoalesce.disposition, 'coalesced');
+  assert.equal(tables.gmail_processing_queue.length, 1);
+  assert.equal(tables.gmail_processing_queue[0].history_id, '195');
+  simulateRpcFailure = false;
+  console.log("✓ Resilient direct DB fallback persisted push and coalesced without RPC");
+
   // Reset account state
   tables.google_tokens[0].email_sync_status = 'ready';
   tables.google_tokens[0].gmail_history_id = '100';
@@ -820,6 +851,143 @@ console.log("\n[Benchmark] Ingress Flood: 1,000 requests in rapid succession");
   assert.ok(avgMs < 5, "Average duplicate intake latency must be < 5ms");
 }
 
+// ------------------------------------------------------------------------------------------------
+// Verification 9: Drive & Calendar OAuth Expiration and Skipping
+// ------------------------------------------------------------------------------------------------
+console.log("\n[Verification 9] Drive & Calendar OAuth Expiration and Skipping Verification");
+{
+  overrides['@/lib/googleDrive'] = {
+    listDriveFolder: async () => ({ folder: { id: 'folder-1' }, files: [] }),
+  };
+  overrides['@/lib/driveIngestion'] = {
+    ingestDriveFile: async () => ({ id: 'ingest-1', pendingCount: 0 }),
+  };
+
+  const driveSync = load('@/lib/googleDriveSync');
+  const calendarSync = load('@/lib/googleCalendarSync');
+
+  // 1. Account with auth_expired must be skipped in Drive sync
+  tables.google_tokens[0].last_sync_status = 'auth_expired';
+  tables.google_tokens[0].email_sync_status = 'auth_expired';
+  const driveResultSkipped = await driveSync.syncGoogleDriveForUser('user-1');
+  assert.equal(driveResultSkipped.accounts, 1);
+  assert.equal(driveResultSkipped.filesScanned, 0);
+  assert.equal(driveResultSkipped.failures.length, 0, "Auth-expired account must be skipped without recording sync failures");
+
+  // 2. Account with auth_expired must be skipped in Calendar bulk sync
+  const calResultSkipped = await calendarSync.syncGoogleCalendarForUser('user-1');
+  assert.equal(calResultSkipped.eventsImported, 0);
+
+  // 3. Drive 401 error must trigger markAccountAuthExpired
+  tables.google_tokens[0].last_sync_status = 'ready';
+  tables.google_tokens[0].email_sync_status = 'ready';
+  tables.connected_accounts[0].sync_status = 'ready';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('oauth2.googleapis.com/token')) {
+      return new Response(JSON.stringify({ access_token: "mock-access-token", expires_in: 3600 }));
+    }
+    if (String(url).includes('googleapis.com/drive')) {
+      return new Response(JSON.stringify({ error: { message: "Invalid Credentials" } }), { status: 401 });
+    }
+    return origFetch(url);
+  };
+
+  try {
+    const driveResultError = await driveSync.syncGoogleDriveForUser('user-1');
+    assert.equal(driveResultError.failures.length, 1);
+    assert.equal(tables.google_tokens[0].last_sync_status, 'auth_expired', "Drive 401 must mark account auth_expired");
+    assert.equal(tables.google_tokens[0].email_sync_status, 'auth_expired');
+    assert.equal(tables.connected_accounts[0].sync_status, 'reconnect_required');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  // Restore account status
+  tables.google_tokens[0].last_sync_status = 'ready';
+  tables.google_tokens[0].email_sync_status = 'ready';
+  tables.connected_accounts[0].sync_status = 'ready';
+  console.log("✓ Drive and Calendar cleanly skip auth-expired accounts and propagate reconnection lifecycle");
+}
+
+// ------------------------------------------------------------------------------------------------
+// Verification 10: Vercel Ignored Build Step Script (Deployment Churn Suppression)
+// ------------------------------------------------------------------------------------------------
+console.log("\n[Verification 10] Vercel Ignored Build Step Script (Deployment Churn Suppression)");
+{
+  const { execFileSync } = require('node:child_process');
+
+  // Test [skip ci]
+  const skipCiRes = execFileSync('bash', ['scripts/vercel-ignore-build.sh'], {
+    env: { ...process.env, VERCEL_GIT_COMMIT_MESSAGE: 'docs: update notes [skip ci]' },
+    stdio: 'pipe',
+  });
+  assert.match(skipCiRes.toString(), /Skipping Vercel deployment/);
+
+  // Test [skip vercel]
+  const skipVercelRes = execFileSync('bash', ['scripts/vercel-ignore-build.sh'], {
+    env: { ...process.env, VERCEL_GIT_COMMIT_MESSAGE: 'test: run adversarial checks [skip vercel]' },
+    stdio: 'pipe',
+  });
+  assert.match(skipVercelRes.toString(), /Skipping Vercel deployment/);
+
+  // Test application changes without skip flag (exits 1 to proceed)
+  let appExitedWith1 = false;
+  try {
+    execFileSync('bash', ['scripts/vercel-ignore-build.sh'], {
+      env: { ...process.env, VERCEL_GIT_COMMIT_MESSAGE: 'feat: new feature' },
+      stdio: 'pipe',
+    });
+  } catch (err) {
+    if (err.status === 1) appExitedWith1 = true;
+  }
+  assert.ok(appExitedWith1, "Application change must exit 1 to proceed with Vercel deployment");
+  console.log("✓ Vercel ignoreCommand correctly suppresses deployment churn for [skip ci] and docs");
+}
+
+// ------------------------------------------------------------------------------------------------
+// Verification 11: Developer Health Alarms and Usage Telemetry
+// ------------------------------------------------------------------------------------------------
+console.log("\n[Verification 11] Developer Health Alarms and Usage Telemetry");
+{
+  overrides['@/lib/serverAuth'] = {
+    requireApiUser: async () => ({ id: 'user-1' }),
+    ApiAuthError: class extends Error { constructor(msg, status = 401) { super(msg); this.status = status; } },
+  };
+
+  const healthRoute = load('@/app/api/debug/health/route');
+  tables.assistant_actions.length = 0;
+
+  // 1. Healthy State
+  const healthyReq = { headers: new Headers() };
+  const healthyRes = await healthRoute.GET(healthyReq);
+  assert.equal(healthyRes.status, 200);
+  const healthyBody = await healthyRes.json();
+  assert.equal(healthyBody.alarms.status, 'healthy');
+  assert.equal(healthyBody.alarms.circuit_breaker_open, false);
+  assert.equal(healthyBody.alarms.dead_letter_count, 0);
+
+  // 2. Critical Alarm: Tripped Circuit Breaker
+  circuitBreaker.recordFailure(new Error("Fail 1"));
+  circuitBreaker.recordFailure(new Error("Fail 2"));
+  circuitBreaker.recordFailure(new Error("Fail 3"));
+  circuitBreaker.recordFailure(new Error("Fail 4"));
+  circuitBreaker.recordFailure(new Error("Fail 5"));
+  assert.equal(circuitBreaker.isOpen(), true);
+
+  const criticalRes = await healthRoute.GET(healthyReq);
+  const criticalBody = await criticalRes.json();
+  assert.equal(criticalBody.alarms.status, 'critical');
+  assert.equal(criticalBody.alarms.circuit_breaker_open, true);
+  assert.ok(tables.assistant_actions.length > 0, "Critical alarm must emit assistant notification");
+  assert.equal(tables.assistant_actions[0].title, "Resource exhaustion alarm active");
+
+  circuitBreaker.reset();
+  console.log("✓ Developer Health reports comprehensive alarms, circuit breaker metrics, and telemetry");
+}
+
 console.log("\n========================================================");
-console.log("ALL 8 CODEX BLOCKER VERIFICATION CHECKS PASSED!");
+console.log("ALL 11 ADVERSARIAL & REGRESSION VERIFICATION CHECKS PASSED!");
 console.log("========================================================");
+
