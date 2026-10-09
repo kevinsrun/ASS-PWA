@@ -1,7 +1,7 @@
 name: ASS intelligence sync
+# ASS-PWA maintenance mode: scheduled execution disabled while its Vercel
+# project is paused. Restore schedule only after explicit operator approval.
 on:
-  schedule:
-    - cron: '7 * * * *'
   workflow_dispatch:
 permissions: {}
 concurrency:
